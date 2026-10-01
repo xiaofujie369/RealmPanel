@@ -1,0 +1,8 @@
+.git
+data
+config
+node_modules
+frontend/node_modules
+__pycache__
+artifacts
+tests

@@ -1,0 +1,12 @@
+data/
+config/
+node_modules/
+frontend/dist/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.tar.gz
+.env
+.venv/
+artifacts/
+vendor/

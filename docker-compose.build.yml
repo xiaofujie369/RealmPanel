@@ -1,0 +1,10 @@
+# 开发专用；生产安装器从 GitHub Releases 加载镜像。
+services:
+  realm-panel-core:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.realm
+  realm-panel-web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
