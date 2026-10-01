@@ -44,9 +44,10 @@ install_dependencies() {
       ;;
     rpm)
       local package_manager=dnf
-      local packages=(ca-certificates python3 tar gzip util-linux coreutils)
+      local packages=(ca-certificates python3 tar gzip util-linux)
       command -v dnf >/dev/null || package_manager=yum
       command -v curl >/dev/null || packages+=(curl)
+      command -v sha256sum >/dev/null && command -v stat >/dev/null || packages+=(coreutils)
       retry "$package_manager" install -y "${packages[@]}"
       ;;
     apk) retry apk add --no-cache bash ca-certificates curl python3 tar gzip util-linux coreutils ;;

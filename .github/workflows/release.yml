@@ -116,9 +116,39 @@ jobs:
           printf '{"version":"%s","realm_version":"2.9.3","architectures":["amd64","arm64"]}\n' "$VERSION" > dist/release.json
           cd dist
           sha256sum *.tar.gz install.sh release.json > SHA256SUMS
-      - name: Publish complete release atomically
+      - name: Publish prerelease for fresh installer acceptance
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --draft --title "RealmPanel $GITHUB_REF_NAME" --generate-notes
-          gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+          gh release create "$GITHUB_REF_NAME" dist/* --prerelease --title "RealmPanel $GITHUB_REF_NAME" --generate-notes
+  install-release:
+    needs: [publish]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fresh installation using public precompiled release
+        run: |
+          VERSION=$(cat VERSION)
+          curl -fL --retry 3 "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/install.sh" -o /tmp/rmp-install.sh
+          sudo env RMP_VERSION="$VERSION" bash /tmp/rmp-install.sh --yes
+          sudo python3 /opt/realm-panel/scripts/healthcheck.py
+          sudo docker run --rm --network host -v /opt/realm-panel:/opt/realm-panel -v /root/realm-panel-install-info.txt:/root/realm-panel-install-info.txt:ro "realm-panel-web:$VERSION" python /opt/realm-panel/tests/live_acceptance.py
+      - name: Verify precompiled update and preserved data
+        run: sudo rmpctl update "$(cat VERSION)"
+      - if: always()
+        run: sudo bash -c 'cd /opt/realm-panel && docker compose down' || true
+  promote:
+    needs: [install-release]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Promote only after real installer acceptance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release edit "$GITHUB_REF_NAME" --prerelease=false --latest
