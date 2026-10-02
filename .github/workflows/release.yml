@@ -113,9 +113,10 @@ jobs:
           test "v$VERSION" = "$GITHUB_REF_NAME"
           git archive --format=tar.gz --prefix=realm-panel/ -o dist/realm-panel.tar.gz HEAD
           cp install.sh dist/install.sh
+          cp scripts/install-local.sh dist/install-local.sh
           printf '{"version":"%s","realm_version":"2.9.3","architectures":["amd64","arm64"]}\n' "$VERSION" > dist/release.json
           cd dist
-          sha256sum *.tar.gz install.sh release.json > SHA256SUMS
+          sha256sum *.tar.gz *.sh release.json > SHA256SUMS
       - name: Publish prerelease for fresh installer acceptance
         env:
           GH_TOKEN: ${{ github.token }}

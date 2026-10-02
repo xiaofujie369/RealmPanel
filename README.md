@@ -25,6 +25,8 @@ Linux **x86_64 / ARM64**，建议至少 512 MB 内存、3 GB 可用磁盘。安�
 
 ## 安装
 
+VPS 访问 GitHub 困难时，使用 [本地下载、SSH 上传与部署的详细命令](LOCAL_INSTALL.md)。
+
 在 root SSH 终端执行一键安装（安装器使用 GitHub Releases 预编译镜像）：
 
 ```bash
