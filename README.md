@@ -2,7 +2,7 @@
 
 基于 **Realm v2.9.3** 的轻量 TCP / UDP 转发管理面板。Web 管理规则，Realm 负责真实转发；无需域名或证书，Docker 部署。
 
-当前为 **0.9.3 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
+当前为 **0.9.4 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
 ![RealmPanel 概览](docs/screenshots/overview.jpg)
 
@@ -45,7 +45,7 @@ curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/i
 固定版本安装：
 
 ```bash
-curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.9.3 bash -s -- --yes
+curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.9.4 bash -s -- --yes
 ```
 
 重复运行安装器不会重置已有数据；已安装环境使用 `rmpctl update`。
@@ -73,7 +73,7 @@ rmpctl reset-path
 rmpctl backup
 rmpctl restore-full --file 备份UUID
 rmpctl update
-rmpctl update 0.9.3
+rmpctl update 0.9.4
 rmpctl uninstall
 ```
 
@@ -194,7 +194,7 @@ GitHub Actions 会执行后端测试、TypeScript 检查、前端构建、npm �
 
 **如何切换黑白主题？** 点击顶栏的太阳/月亮按钮，或在「设置 → 外观」选择亮色、暗色、跟随系统。偏好保存在当前浏览器。
 
-**为什么界面显示 0.9.3？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
+**为什么界面显示 0.9.4？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
 
 ## 许可
 
