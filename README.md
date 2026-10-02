@@ -24,7 +24,7 @@ Linux **x86_64 / ARM64**，建议至少 512 MB 内存、3 GB 可用磁盘。安�
 
 ## 安装
 
-在 root SSH 终端执行一键安装（正式 Release 发布后可用）：
+在 root SSH 终端执行一键安装（v0.9.2 正式 Release 已发布并通过全新安装验证）：
 
 ```bash
 curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | bash
