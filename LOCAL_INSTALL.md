@@ -80,3 +80,17 @@ ssh -i $Key -p $SshPort "root@$Vps" "cat /root/realm-panel-install-info.txt"
 第二条命令显示完整管理地址、管理员账号和初始密码，请妥善保管。若无法打开面板，在 VPS 提供商安全组和系统防火墙中放行安装器显示的管理 TCP 端口；转发监听端口按所用 TCP/UDP 协议放行。
 
 已有部署可在线升级：`rmpctl update`。本地包安装命令用于全新部署，不会强制覆盖已有数据库。
+
+## Debian 13：Docker 官方源连接被重置
+
+若旧安装包在下载 `download.docker.com/linux/debian/gpg` 时出现 `curl: (35) Recv failure: Connection reset by peer`，可以通过 Debian 13 自身的软件源安装引擎和 Compose v2：
+
+```bash
+apt-get update
+apt-get install -y docker.io docker-cli docker-compose
+systemctl enable --now docker
+docker --version
+docker compose version
+```
+
+然后重新执行原来的 `install-local.sh` 命令即可，无需重新下载已上传的 RealmPanel 镜像。新版安装器在 Debian 13 上自动使用这条安装路径。此命令专用于 Debian 13；Debian 12 的 `docker-compose` 软件包是 v1，不能直接沿用。

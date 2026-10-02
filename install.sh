@@ -85,6 +85,19 @@ ensure_swap() {
   log '✓ 已启用 1 GB Swap 并配置开机启用。Swap 是磁盘交换空间，不是物理内存。'
 }
 install_docker_packages() {
+  # Debian 13 provides the engine, CLI and Compose v2 in its own repository.
+  # Avoid download.docker.com entirely on fresh Debian 13 installations.
+  if [[ $ID == debian && ${VERSION_ID%%.*} -ge 13 ]]; then
+    if ! command -v docker >/dev/null; then
+      retry apt-get -o DPkg::Lock::Timeout=120 install -y docker.io docker-cli
+    fi
+    if ! docker compose version >/dev/null 2>&1; then
+      retry apt-get -o DPkg::Lock::Timeout=120 install -y docker-compose
+    fi
+    docker --version
+    docker compose version
+    return
+  fi
   if ! command -v docker >/dev/null; then
     case $ID in
       alpine) retry apk add --no-cache docker docker-cli-compose ;;
