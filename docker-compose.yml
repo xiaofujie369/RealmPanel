@@ -1,7 +1,7 @@
 name: realm-panel
 services:
   realm-panel-core:
-    image: realm-panel-core:${RMP_VERSION:-0.9.2}
+    image: realm-panel-core:${RMP_VERSION:-0.9.3}
     container_name: realm-panel-core
     restart: unless-stopped
     network_mode: host
@@ -19,7 +19,7 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
   realm-panel-web:
-    image: realm-panel-web:${RMP_VERSION:-0.9.2}
+    image: realm-panel-web:${RMP_VERSION:-0.9.3}
     container_name: realm-panel-web
     restart: unless-stopped
     network_mode: host
