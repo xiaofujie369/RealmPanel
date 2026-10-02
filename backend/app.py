@@ -184,6 +184,11 @@ def list_rules():
         return s.rules(db)
 
 
+@app.get(P + '/traffic')
+def traffic():
+    return m.core('traffic')
+
+
 @app.post(P + '/rules')
 def create_rule(body: Rule):
     return {'id': m.apply(lambda db: s.save_rule(db, body.model_dump()), '添加规则')}

@@ -2,7 +2,7 @@
 
 基于 **Realm v2.9.3** 的轻量 TCP / UDP 转发管理面板。Web 管理规则，Realm 负责真实转发；无需域名或证书，Docker 部署。
 
-当前为 **0.9.4 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
+当前为 **0.9.5 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
 ![RealmPanel 概览](docs/screenshots/overview.jpg)
 
@@ -15,6 +15,9 @@
 - JSON / CSV 导入预览及冲突处理（跳过、覆盖、寻找新端口），批量文本添加。
 - 备份管理、运行日志、操作审计、账号修改、SSH 重置、访问白名单。
 - 紧凑的中文表单与表格、响应式移动布局、黑白主题切换；每条规则支持编辑、暂停/恢复、诊断、复制和删除。
+- 每条规则的已用流量、上行和下行：按监听端口的网络层字节累计，包含协议开销；不重复计入出口侧相同转发数据。
+
+流量统计从启用此功能时开始，已有历史流量无法补算。独立 nftables 计数表仅统计，不修改现有防火墙的放行/阻断规则。核心容器增加 `NET_ADMIN` 权限以管理计数器；内核需支持 nftables，受限容器中无法使用时界面会明确显示“统计不可用”。计数每 5 秒保存至 `data/traffic/traffic.sqlite3`，界面每 15 秒刷新，规则启停、端口编辑及正常重启保留累计；异常断电可能丢失最后一个保存周期。
 
 ## 系统要求
 
@@ -45,7 +48,7 @@ curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/i
 固定版本安装：
 
 ```bash
-curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.9.4 bash -s -- --yes
+curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.9.5 bash -s -- --yes
 ```
 
 重复运行安装器不会重置已有数据；已安装环境使用 `rmpctl update`。
@@ -73,7 +76,7 @@ rmpctl reset-path
 rmpctl backup
 rmpctl restore-full --file 备份UUID
 rmpctl update
-rmpctl update 0.9.4
+rmpctl update 0.9.5
 rmpctl uninstall
 ```
 
@@ -155,7 +158,7 @@ Realm 官方支持 JSON 和 TOML；本实现使用等价 JSON，以标准 JSON �
 
 - 两容器均为 host 网络，添加端口无需修改 Compose。
 - Web 没有 Docker Socket；Supervisor 只接受固定的状态、日志和重启操作。
-- 根文件系统只读、移除 Linux capabilities、禁止提升权限。核心仅保留绑定低端口权限。
+- 根文件系统只读、移除 Linux capabilities、禁止提升权限。核心仅保留绑定低端口及管理独立 nftables 流量计数表的权限（NET_BIND_SERVICE / NET_ADMIN）。
 - 所有 API 都位于随机管理路径下，未知路径统一 404，无公开 OpenAPI / Swagger。
 - Session 12 小时，HttpOnly + SameSite=Strict；HTTP 不强制 Secure，直接 HTTPS 请求时自动 Secure。
 - 修改操作验证 CSRF Token、同源请求标记和 Origin。五次失败锁定来源 IP 15 分钟。
@@ -194,7 +197,7 @@ GitHub Actions 会执行后端测试、TypeScript 检查、前端构建、npm �
 
 **如何切换黑白主题？** 点击顶栏的太阳/月亮按钮，或在「设置 → 外观」选择亮色、暗色、跟随系统。偏好保存在当前浏览器。
 
-**为什么界面显示 0.9.4？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
+**为什么界面显示 0.9.5？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
 
 ## 许可
 

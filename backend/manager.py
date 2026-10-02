@@ -29,6 +29,7 @@ def recover() -> None:
     with LOCK, s.connect() as db:
         content = json.dumps(generate(s.rules(db), s.get(db, 'network'))).encode()
         s.atomic(s.DATA / 'realm/active.json', content)
+        s.atomic(s.DATA / 'realm/meter-rules.json', json.dumps(s.rules(db)).encode())
         core('restart', 'POST')
 
 
@@ -45,6 +46,7 @@ def apply(change, reason: str):
             validate(s.rules(db), s.get(db, 'web_port'))
             content = json.dumps(generate(s.rules(db), s.get(db, 'network'))).encode()
             s.atomic(s.DATA / 'realm/active.json', content)
+            s.atomic(s.DATA / 'realm/meter-rules.json', json.dumps(s.rules(db)).encode())
             core('restart', 'POST')
             s.put(db, 'revision', s.get(db, 'revision') + 1)
             db.commit()
@@ -52,6 +54,7 @@ def apply(change, reason: str):
         except Exception as exc:
             db.rollback()
             s.atomic(s.DATA / 'realm/active.json', old)
+            s.atomic(s.DATA / 'realm/meter-rules.json', json.dumps(s.rules(db)).encode())
             try:
                 core('restart', 'POST')
             except Exception as rollback:

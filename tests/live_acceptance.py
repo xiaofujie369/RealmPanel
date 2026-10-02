@@ -104,9 +104,18 @@ try:
     rid = api('rules', 'POST', body)['id']; owned.append(rid)
     tcp_echo(port); udp_echo(port)
     record('真实 TCP+UDP 双协议转发')
+    rule_uuid = api(f'rules/{rid}')['uuid']
+    measured = api('traffic')
+    assert measured['available'], measured
+    before = measured['rules'][rule_uuid]
+    assert before['rx_bytes'] > 0 and before['tx_bytes'] > 0, before
+    record('单条规则真实 TCP/UDP 双向流量计数')
     api(f'rules/{rid}/disable', 'POST'); tcp_echo(port, False)
     api(f'rules/{rid}/enable', 'POST'); tcp_echo(port); udp_echo(port)
     record('暂停与恢复')
+    after = api('traffic')['rules'][rule_uuid]
+    assert after['total_bytes'] > before['total_bytes'], (before, after)
+    record('暂停、恢复及核心重启后流量累计保留')
     new_port = free_port(); body['listen_port'] = new_port
     api(f'rules/{rid}', 'PUT', body); tcp_echo(port, False); tcp_echo(new_port); udp_echo(new_port)
     record('编辑监听端口，旧端口关闭、新端口生效')
@@ -121,6 +130,11 @@ try:
     clone = api(f'rules/{rid}/clone', 'POST')['id']; owned.append(clone)
     cloned = api(f'rules/{clone}'); tcp_echo(cloned['listen_port'])
     record('复制规则并寻找可用端口')
+    clone_uuid = cloned['uuid']
+    measured = api('traffic')['rules']
+    assert measured[clone_uuid]['total_bytes'] > 0
+    assert clone_uuid != rule_uuid and measured[rule_uuid]['total_bytes'] > measured[clone_uuid]['total_bytes']
+    record('复制规则使用独立流量计数器')
     occupied = socket.socket(); occupied.bind(('127.0.0.1', 0)); occupied.listen()
     failed = {**body, 'listen_port': occupied.getsockname()[1]}
     response = api(f'rules/{rid}', 'PUT', failed, expected=400)

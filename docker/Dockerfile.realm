@@ -1,9 +1,11 @@
 FROM python:3.12-slim-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends nftables && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir psutil==7.0.0
 COPY vendor/realm /usr/local/bin/realm
 COPY docs/third-party/Realm-LICENSE /usr/share/licenses/realm/LICENSE
 RUN chmod 755 /usr/local/bin/realm && /usr/local/bin/realm --version
 WORKDIR /app
 COPY backend/supervisor.py /app/supervisor.py
+COPY backend/traffic.py /app/traffic.py
 ENV PYTHONUNBUFFERED=1 RUST_LOG=info
 CMD ["python", "/app/supervisor.py"]

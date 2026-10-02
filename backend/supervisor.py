@@ -11,12 +11,14 @@ import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import psutil
+from traffic import Meter
 
 ROOT = Path('/app/data')
 CONFIG = ROOT / 'realm/active.json'
 PROC: subprocess.Popen | None = None
 LOCK = threading.RLock()
 LINES: collections.deque[str] = collections.deque(maxlen=1000)
+METER: Meter | None = None
 
 
 def reader(proc: subprocess.Popen) -> None:
@@ -34,11 +36,17 @@ def stop() -> None:
         except subprocess.TimeoutExpired:
             PROC.kill()
             PROC.wait()
+    if METER:
+        METER.snapshot()
+        METER.configure([])
 
 
 def start() -> None:
     global PROC
     stop()
+    if METER:
+        manifest = ROOT / 'realm/meter-rules.json'
+        METER.configure(json.loads(manifest.read_text()) if manifest.exists() else [])
     if not json.loads(CONFIG.read_text())['endpoints']:
         PROC = None
         return
@@ -81,6 +89,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, status())
             elif self.path == '/logs':
                 self.reply(200, {'lines': list(LINES)})
+            elif self.path == '/traffic':
+                self.reply(200, METER.snapshot())
             else:
                 self.reply(404, {})
 
@@ -115,6 +125,8 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
+    global METER
+    METER = Meter(ROOT / 'traffic')
     ROOT.joinpath('run').mkdir(parents=True, exist_ok=True)
     path = ROOT / 'run/supervisor.sock'
     path.unlink(missing_ok=True)
@@ -128,8 +140,12 @@ def main() -> None:
         start()
     def monitor() -> None:
         while True:
-            time.sleep(10)
+            time.sleep(5)
             with LOCK:
+                METER.snapshot()
+                manifest = ROOT / 'realm/meter-rules.json'
+                if manifest.exists():
+                    METER.configure(json.loads(manifest.read_text()))
                 if CONFIG.exists() and (PROC is None or PROC.poll() is not None):
                     start()
     threading.Thread(target=monitor, daemon=True).start()

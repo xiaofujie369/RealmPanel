@@ -1,17 +1,18 @@
 name: realm-panel
 services:
   realm-panel-core:
-    image: realm-panel-core:${RMP_VERSION:-0.9.4}
+    image: realm-panel-core:${RMP_VERSION:-0.9.5}
     container_name: realm-panel-core
     restart: unless-stopped
     network_mode: host
     volumes:
       - ./data/realm:/app/data/realm:ro
       - ./data/run:/app/data/run
+      - ./data/traffic:/app/data/traffic
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
-    cap_add: [NET_BIND_SERVICE]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN]
     security_opt: [no-new-privileges:true]
     environment:
       TZ: Asia/Shanghai
@@ -19,7 +20,7 @@ services:
       driver: json-file
       options: {max-size: "5m", max-file: "3"}
   realm-panel-web:
-    image: realm-panel-web:${RMP_VERSION:-0.9.4}
+    image: realm-panel-web:${RMP_VERSION:-0.9.5}
     container_name: realm-panel-web
     restart: unless-stopped
     network_mode: host
