@@ -4,8 +4,6 @@
 
 当前为 **0.9.5 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
-![RealmPanel 概览](docs/screenshots/overview.jpg)
-
 ## 功能
 
 - 随机端口、管理路径、管理员账号及高强度密码；支持安装时自定义。
