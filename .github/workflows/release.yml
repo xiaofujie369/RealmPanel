@@ -27,7 +27,7 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: pip install -r backend/requirements.txt
-      - run: python -m pytest tests/test_backend.py tests/test_auth.py tests/test_traffic.py -q
+      - run: python -m pytest tests/test_backend.py tests/test_auth.py tests/test_traffic.py tests/test_forwarder.py -q
       - run: npm ci && npm run build && npm audit --audit-level=high
         working-directory: frontend
       - run: bash -n install.sh scripts/rmpctl scripts/update.sh && bash install.sh --check
@@ -77,13 +77,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-      - name: Download pinned Realm release
-        run: python3 scripts/download-realm.py --arch '${{ matrix.arch }}'
       - name: Build on GitHub, never on the VPS
         run: |
           export RMP_VERSION=$(cat VERSION)
           docker compose -f docker-compose.yml -f docker-compose.build.yml build
-          docker run --rm realm-panel-core:$RMP_VERSION /usr/local/bin/realm --version
+          docker run --rm realm-panel-core:$RMP_VERSION nft --version
           mkdir -p dist
           docker save realm-panel-web:$RMP_VERSION realm-panel-core:$RMP_VERSION | gzip -1 > dist/realm-panel-images-${{ matrix.arch }}.tar.gz
       - name: Real TCP and UDP integration test
@@ -114,7 +112,7 @@ jobs:
           git archive --format=tar.gz --prefix=realm-panel/ -o dist/realm-panel.tar.gz HEAD
           cp install.sh dist/install.sh
           cp scripts/install-local.sh dist/install-local.sh
-          printf '{"version":"%s","realm_version":"2.9.3","architectures":["amd64","arm64"]}\n' "$VERSION" > dist/release.json
+          printf '{"version":"%s","engine":"nftables","architectures":["amd64","arm64"]}\n' "$VERSION" > dist/release.json
           cd dist
           sha256sum *.tar.gz *.sh release.json > SHA256SUMS
       - name: Publish prerelease for fresh installer acceptance

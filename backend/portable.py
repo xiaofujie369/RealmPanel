@@ -2,13 +2,13 @@ import csv
 import io
 import json
 from datetime import datetime, timezone
-from backend.models import Rule, Network, overlap
+from backend.models import Rule, overlap
 from backend import storage as s
 
 
 def export(db, ids: list[int] | None = None, group: str | None = None) -> dict:
     rows = [r for r in s.rules(db) if (ids is None or r['id'] in ids) and (group is None or r['group'] == group)]
-    return {'format': 'realm-panel', 'schema_version': 1, 'realm_version': '2.9.3', 'exported_at': datetime.now(timezone.utc).isoformat(), 'settings': s.get(db, 'network'), 'groups': [{'name': r[0]} for r in db.execute('SELECT name FROM groups ORDER BY name')], 'rules': [{k: r[k] for k in Rule.model_fields} for r in rows]}
+    return {'format': 'realm-panel', 'schema_version': 2, 'engine': 'nftables', 'exported_at': datetime.now(timezone.utc).isoformat(), 'groups': [{'name': r[0]} for r in db.execute('SELECT name FROM groups ORDER BY name')], 'rules': [{k: r[k] for k in Rule.model_fields} for r in rows]}
 
 
 def csv_export(payload: dict) -> str:
@@ -31,9 +31,10 @@ def parse(content: str, kind: str) -> dict:
         raise ValueError('文件不得超过 2 MB')
     if kind == 'json':
         data = json.loads(content.lstrip('\ufeff'))
-        if not isinstance(data, dict) or data.get('format') != 'realm-panel' or data.get('schema_version') != 1 or not isinstance(data.get('rules'), list):
+        # schema 1 = Realm era export; its global network settings no longer apply.
+        if not isinstance(data, dict) or data.get('format') != 'realm-panel' or data.get('schema_version') not in (1, 2) or not isinstance(data.get('rules'), list):
             raise ValueError('不支持的格式或 schema_version')
-        Network.model_validate(data.get('settings', {}))
+        data.pop('settings', None)
     elif kind == 'csv':
         rows = list(csv.DictReader(io.StringIO(content.lstrip('\ufeff'))))
         for row in rows:
@@ -42,9 +43,6 @@ def parse(content: str, kind: str) -> dict:
                     row[key] = row[key][1:]
             if row.get('enabled') in ('true', 'false'):
                 row['enabled'] = row['enabled'] == 'true'
-            for key in Network.model_fields:
-                if row.get(key) == '':
-                    row[key] = None
         data = {'rules': rows}
     elif kind == 'text':
         rows = []

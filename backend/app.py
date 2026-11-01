@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 from backend import storage as s, manager as m, portable
 from backend import __version__
-from backend.models import Rule, Network, overlap
+from backend.models import Rule, overlap, upgrade
 
 PH = PasswordHasher()
 LOGGER = logging.getLogger('realmpanel')
@@ -35,7 +35,7 @@ def monitor() -> None:
         try:
             CACHE = m.core('status')
         except Exception:
-            CACHE = {'healthy': False, 'running': False, 'error': '无法连接 Realm Supervisor'}
+            CACHE = {'healthy': False, 'running': False, 'error': '无法连接转发核心'}
         time.sleep(10)
 
 
@@ -173,9 +173,14 @@ def logout(request: Request):
 
 @app.get(P + '/status')
 def status():
+    global CACHE
+    try:
+        CACHE = m.core('status')
+    except Exception:
+        pass
     with s.connect() as db:
         rules = s.rules(db)
-        return {**CACHE, 'panel_version': __version__, 'realm_version': '2.9.3', 'rules': len(rules), 'enabled': sum(r['enabled'] for r in rules), 'host_memory_mb': round(psutil.virtual_memory().used / 1048576), 'load': os.getloadavg(), 'revision': s.get(db, 'revision'), 'web_port': s.get(db, 'web_port')}
+        return {**CACHE, 'panel_version': __version__, 'rules': len(rules), 'enabled': sum(r['enabled'] for r in rules), 'host_memory_mb': round(psutil.virtual_memory().used / 1048576), 'load': os.getloadavg(), 'revision': s.get(db, 'revision'), 'web_port': s.get(db, 'web_port')}
 
 
 @app.get(P + '/rules')
@@ -366,8 +371,6 @@ def import_apply(body: ImportApply, request: Request):
             for group in item['data'].get('groups', []):
                 name = Group(name=group['name']).name
                 db.execute('INSERT OR IGNORE INTO groups VALUES (?)', (name,))
-            if 'settings' in item['data']:
-                s.put(db, 'network', Network.model_validate(item['data']['settings']).model_dump())
             return count
         count = m.apply(change, '导入前备份')
         PREVIEWS.pop(body.token, None)
@@ -407,10 +410,9 @@ def restore(bid: str):
         for row in payload['groups']:
             db.execute('INSERT INTO groups VALUES (?)', (row['name'],))
         for row in payload['forward_rules']:
-            Rule.model_validate(json.loads(row['body']))
-            db.execute('INSERT INTO forward_rules VALUES (?,?,?,?,?)', tuple(row[k] for k in ('id', 'uuid', 'body', 'created_at', 'updated_at')))
-        network = next(json.loads(r['value']) for r in payload['settings'] if r['key'] == 'network')
-        s.put(db, 'network', Network.model_validate(network).model_dump())
+            body = upgrade(json.loads(row['body']))
+            Rule.model_validate(body)
+            db.execute('INSERT INTO forward_rules VALUES (?,?,?,?,?)', (row['id'], row['uuid'], json.dumps(body, ensure_ascii=False), row['created_at'], row['updated_at']))
     m.apply(change, '恢复前备份')
     return {'ok': True}
 
@@ -435,9 +437,9 @@ def delete_backup(bid: str):
 
 
 @app.get(P + '/logs/{kind}')
-def logs(kind: Literal['realm', 'operations'], lines: int = 100):
+def logs(kind: Literal['core', 'realm', 'operations'], lines: int = 100):
     lines = min(max(lines, 1), 1000)
-    if kind == 'realm':
+    if kind in ('core', 'realm'):
         return m.core('logs')['lines'][-lines:]
     with s.connect() as db:
         return [dict(r) for r in db.execute('SELECT * FROM operation_logs ORDER BY id DESC LIMIT ?', (lines,))]
@@ -446,11 +448,10 @@ def logs(kind: Literal['realm', 'operations'], lines: int = 100):
 @app.get(P + '/settings')
 def settings(request: Request):
     with s.connect() as db:
-        return {**{k: s.get(db, k) for k in ('network', 'retention', 'whitelist', 'web_port', 'web_path')}, 'client_ip': request.client.host}
+        return {**{k: s.get(db, k) for k in ('retention', 'whitelist', 'web_port', 'web_path')}, 'client_ip': request.client.host}
 
 
 class Settings(BaseModel):
-    network: Network
     retention: Literal[10, 20, 30, 50, 100]
     whitelist: list[str] = Field(max_length=100)
     confirm_lockout: bool = False
@@ -462,7 +463,6 @@ def update_settings(body: Settings, request: Request):
     if nets and not any(ipaddress.ip_address(request.client.host) in ipaddress.ip_network(n) for n in nets) and not body.confirm_lockout:
         raise ValueError('白名单不包含当前客户端 IP；请确认允许将自己排除')
     def change(db):
-        s.put(db, 'network', body.network.model_dump())
         s.put(db, 'retention', body.retention)
         s.put(db, 'whitelist', nets)
     m.apply(change, '修改设置')

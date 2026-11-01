@@ -31,6 +31,8 @@ rollback() {
 }
 trap rollback ERR
 tar -C "$WORK/source" -cf - . | tar -C /opt/realm-panel -xf -
+mkdir -p data/forward data/traffic
+[[ -f /etc/sysctl.d/90-realm-panel.conf ]] || { printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/90-realm-panel.conf; sysctl -q -w net.ipv4.ip_forward=1; }
 printf 'RMP_VERSION=%s\n' "$RELEASE_VERSION" > .env
 docker compose up -d --no-build
 python3 scripts/healthcheck.py

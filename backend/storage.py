@@ -35,7 +35,7 @@ def connect() -> sqlite3.Connection:
 
 
 def init() -> None:
-    for d in ('database', 'realm', 'backups', 'logs', 'secrets', 'run'):
+    for d in ('database', 'forward', 'backups', 'logs', 'secrets', 'run'):
         (DATA / d).mkdir(parents=True, exist_ok=True)
     with connect() as db:
         db.executescript('''
@@ -52,8 +52,15 @@ def init() -> None:
         INSERT OR IGNORE INTO groups VALUES('默认');
         ''')
         db.execute('PRAGMA journal_mode=WAL')
-        for key, value in {'network': {'tcp_timeout': 5, 'udp_timeout': 30, 'tcp_keepalive': 15}, 'retention': 30, 'whitelist': [], 'revision': 0}.items():
+        for key, value in {'retention': 30, 'whitelist': [], 'revision': 0}.items():
             db.execute('INSERT OR IGNORE INTO settings VALUES (?,?)', (key, json.dumps(value)))
+        if not db.execute('SELECT 1 FROM migrations WHERE version=2').fetchone():
+            # 2: Realm -> nftables. Drop Realm-only rule options and global network settings.
+            from backend.models import upgrade
+            for rid, body in db.execute('SELECT id,body FROM forward_rules').fetchall():
+                db.execute('UPDATE forward_rules SET body=? WHERE id=?', (json.dumps(upgrade(json.loads(body)), ensure_ascii=False), rid))
+            db.execute("DELETE FROM settings WHERE key='network'")
+            db.execute('INSERT INTO migrations VALUES(2)')
     key = DATA / 'secrets/backup.key'
     if not key.exists():
         atomic(key, Fernet.generate_key())

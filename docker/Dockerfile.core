@@ -1,0 +1,11 @@
+FROM python:3.12-slim-trixie
+# nftables performs the forwarding in the kernel; iptables only adds one narrow
+# FORWARD accept chain when Docker/ufw set the FORWARD policy to DROP; conntrack
+# clears connections of changed or paused rules.
+RUN apt-get update && apt-get install -y --no-install-recommends nftables iptables conntrack && rm -rf /var/lib/apt/lists/* \
+    && nft --version && iptables-nft --version && conntrack --version
+WORKDIR /app
+COPY backend/supervisor.py backend/forwarder.py backend/traffic.py /app/
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+STOPSIGNAL SIGTERM
+CMD ["python", "/app/supervisor.py"]

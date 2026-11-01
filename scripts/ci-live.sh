@@ -6,7 +6,7 @@ mkdir -p /opt/realm-panel
 tar --exclude=.git --exclude=dist --exclude=node_modules --exclude=frontend/node_modules -cf - . | tar -C /opt/realm-panel -xf -
 cd /opt/realm-panel
 export RMP_VERSION=$(cat VERSION)
-mkdir -p data/{database,realm,run,backups,logs,secrets}
+mkdir -p data/{database,forward,run,backups,logs,secrets,traffic}
 docker compose run --rm --no-deps -T realm-panel-web python -m backend.cli init --auto
 install -m 600 data/secrets/install-info.txt /root/realm-panel-install-info.txt
 rm data/secrets/install-info.txt

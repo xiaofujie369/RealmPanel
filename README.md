@@ -1,25 +1,48 @@
 # RealmPanel
 
-基于 **Realm v2.9.3** 的轻量 TCP / UDP 转发管理面板。Web 管理规则，Realm 负责真实转发；无需域名或证书，Docker 部署。
+基于 **nftables 内核转发**的轻量 TCP / UDP 转发管理面板。Web 管理规则，Linux 内核 netfilter（DNAT + SNAT）负责真实转发，数据不经过用户态进程；无需域名或证书，Docker 部署。
 
-当前为 **0.9.5 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
+0.10.0 起转发核心由 Realm 切换为 nftables。同机实测（4 并发 iperf3，veth 隔离网络）：TCP 吞吐 realm 17.8–18.4 Gbit/s → nftables 25.7–27.5 Gbit/s（约 +45%）；UDP 800 Mbit/s 时 realm 丢包 15–25%，nftables 0%。旧版数据库、备份和导出文件自动兼容，详见下文「从 Realm 版本迁移」。
+
+当前为 **0.10.0 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
 ## 功能
 
 - 随机端口、管理路径、管理员账号及高强度密码；支持安装时自定义。
 - TCP / UDP / TCP+UDP，IPv4 / IPv6 / 域名目标，规则启停、编辑、复制、分组及批量操作。
-- Through（出口源 IP）、Interface（出口网卡）、TCP / UDP 超时和 TCP Keepalive。
-- 每次修改先加密备份，再生成配置、重启 Realm、核对 Realm 自身监听；失败整体回滚。
+- 目标支持域名：核心每 30 秒重新解析，地址变化自动更新；DNS 暂时失败时沿用上次地址。监听 `::` 时 IPv4 客户端转发到 A 记录、IPv6 客户端转发到 AAAA 记录。
+- Through（出口源 IP，SNAT）；留空时自动使用出口网卡地址（masquerade）。
+- 每次修改先加密备份，再原子替换 nftables 规则；端口被本机进程占用、域名无法解析或未开启转发时拒绝应用并整体回滚。
+- 规则原子更新，未改动规则的现有连接不受影响；被修改、暂停或删除的规则会清除其连接跟踪，立即断开。
 - JSON / CSV 导入预览及冲突处理（跳过、覆盖、寻找新端口），批量文本添加。
 - 备份管理、运行日志、操作审计、账号修改、SSH 重置、访问白名单。
 - 紧凑的中文表单与表格、响应式移动布局、黑白主题切换；每条规则支持编辑、暂停/恢复、诊断、复制和删除。
-- 每条规则的已用流量、上行和下行：按监听端口的网络层字节累计，包含协议开销；不重复计入出口侧相同转发数据。
+- 每条规则的已用流量、上行和下行：按连接跟踪方向统计网络层字节，包含协议开销；不重复计入出口侧相同转发数据。
 
-流量统计从启用此功能时开始，已有历史流量无法补算。独立 nftables 计数表仅统计，不修改现有防火墙的放行/阻断规则。核心容器增加 `NET_ADMIN` 权限以管理计数器；内核需支持 nftables，受限容器中无法使用时界面会明确显示“统计不可用”。计数每 5 秒保存至 `data/traffic/traffic.sqlite3`，界面每 15 秒刷新，规则启停、端口编辑及正常重启保留累计；异常断电可能丢失最后一个保存周期。
+计数每 5 秒保存至 `data/traffic/traffic.sqlite3`，界面每 15 秒刷新，规则启停、端口编辑、正常重启及从 Realm 版本升级均保留累计；异常断电可能丢失最后一个保存周期。
+
+### 转发原理与对防火墙的影响
+
+- 核心只创建 `table inet realmpanel`：prerouting / output 链做 DNAT（`fib daddr type local` 限定只处理发往本机的流量），postrouting 链对已 DNAT 的连接做 masquerade 或指定 SNAT，另有两个只计数的 filter 链。从不执行 `flush ruleset`，不改动其他表。
+- Docker、ufw 会把 iptables FORWARD 默认策略设为 DROP。此时核心新建 `RMP-FORWARD` 链，并在 `DOCKER-USER`（无则在 `FORWARD`）首行跳转，链内只放行本面板规则对应的 DNAT 连接（`--ctstate DNAT --ctorigdstport 端口`）。
+- 核心容器停止（`rmpctl stop` / 卸载）时删除上述表和链，转发随之停止；核心启动时从数据库重建。
+- 没有监听进程，因此端口冲突改为读取本机套接字表检查：端口被本机服务（例如 SSH、Web）监听时拒绝新建规则，避免劫持该服务的外部流量。
+- 安装器开启 `net.ipv4.ip_forward` 并写入 `/etc/sysctl.d/90-realm-panel.conf`。IPv6 转发不会自动开启（开启后内核默认不再接受路由通告，可能导致依赖 SLAAC 的 IPv6 断网）；需要转发外部 IPv6 流量时请自行设置 `net.ipv6.conf.all.forwarding=1`（并按需设置 `accept_ra=2`）。
+
+### 与 Realm 的行为差异
+
+- nftables 不做 IPv4 / IPv6 互转：目标地址必须与监听地址同族，监听 `::` 可同时服务两种。
+- 外部流量不能转发到 `127.0.0.1` 等回环地址；转发到本机服务请填写本机网卡 IP，或监听地址也使用回环地址。
+- 不再支持 Interface（出口网卡由系统路由决定）、TCP 连接超时、UDP 超时和 TCP Keepalive（由内核连接跟踪管理）。
+- 从 `127.0.0.1` 发起、目标为其他主机的连接无法经回环地址转发（内核会丢弃源地址为回环的外发包）；本机测试请连接本机网卡 IP。
+
+### 从 Realm 版本迁移
+
+在 0.9.x 上执行 `rmpctl update` 即可。升级时数据库自动迁移：规则保留，Realm 专用的 Interface、超时及 Keepalive 参数与全局网络设置被移除；旧 `realmpanel_meter` 计数表被删除，累计流量保留。旧版加密备份可直接在 Web 或 `rmpctl restore-full` 中恢复。若有规则同时满足「目标为 IPv6、监听为 IPv4」等跨族组合，升级后它会在概览中显示为问题，请改为同族地址。
 
 ## 系统要求
 
-Linux **x86_64 / ARM64**，建议至少 512 MB 内存、3 GB 可用磁盘。安装仅需下载 GitHub Releases 预编译镜像，不需要 VPS 访问 npm/PyPI 或编译代码。
+Linux **x86_64 / ARM64**，内核支持 nftables（nf_tables，Linux 5.2+ 的 inet NAT；主流发行版默认具备）。OpenVZ / 部分 LXC 等不允许操作内核防火墙的虚拟化无法使用。建议至少 512 MB 内存、3 GB 可用磁盘。安装仅需下载 GitHub Releases 预编译镜像，不需要 VPS 访问 npm/PyPI 或编译代码。
 
 安装器支持 Ubuntu 22.04+、Debian 11+、Rocky Linux / AlmaLinux / RHEL / CentOS Stream 8+、Fedora、Alpine。使用 apt、dnf/yum 或 apk 安装依赖，适配 systemd / OpenRC。不同发行版的实际验证层次详见验收记录；发行版派生环境不冒充官方 Docker 支持。
 
@@ -48,7 +71,7 @@ curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/i
 固定版本安装：
 
 ```bash
-curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.9.5 bash -s -- --yes
+curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.10.0 bash -s -- --yes
 ```
 
 重复运行安装器不会重置已有数据；已安装环境使用 `rmpctl update`。
@@ -60,7 +83,7 @@ curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/i
 3. 保存后自动应用；不需要重新执行 Compose 或编辑 TOML。
 4. 从「导入 / 导出」下载配置，上传到其他服务器后先预览再确认应用。
 
-新规则默认 TCP+UDP。空规则时 Supervisor 正常待机，不运行空配置下会自行退出的 Realm 进程。「即时应用」采用安全重启，会断开当前 Realm 连接。
+新规则默认 TCP+UDP。保存即原子生效，不重启任何进程；只有被修改、暂停或删除的规则会断开现有连接。
 
 ## CLI
 
@@ -76,7 +99,7 @@ rmpctl reset-path
 rmpctl backup
 rmpctl restore-full --file 备份UUID
 rmpctl update
-rmpctl update 0.9.5
+rmpctl update 0.10.0
 rmpctl uninstall
 ```
 
@@ -93,33 +116,31 @@ rmpctl uninstall
 ```json
 {
   "format": "realm-panel",
-  "schema_version": 1,
-  "realm_version": "2.9.3",
-  "settings": {"tcp_timeout": 5, "udp_timeout": 30, "tcp_keepalive": 15},
+  "schema_version": 2,
+  "engine": "nftables",
   "groups": [{"name": "美国"}],
   "rules": [{
     "name": "美国01", "group": "美国", "enabled": true,
     "listen_host": "0.0.0.0", "listen_port": 2088,
     "remote_host": "example.com", "remote_port": 443,
-    "protocol": "tcp_udp", "through": "", "interface": "",
-    "tcp_timeout": null, "udp_timeout": null, "tcp_keepalive": null,
+    "protocol": "tcp_udp", "through": "",
     "remark": "美国落地"
   }]
 }
 ```
 
-高级参数为 `null` 时使用全局默认值。JSON 导入同时应用其全局网络参数。不同监听地址在通配地址覆盖时也被识别为冲突；默认不允许同端口重复，即使协议不同。
+仍可导入 Realm 版本导出的 `schema_version: 1` 文件：其 `settings`、`tcp_timeout`、`udp_timeout`、`tcp_keepalive` 会被忽略；`interface` 非空的规则会报错，清空后即可导入。不同监听地址在通配地址覆盖时也被识别为冲突；默认不允许同端口重复，即使协议不同。
 
 ## CSV 与批量文本
 
 CSV 为 UTF-8 BOM，包含完整规则参数，支持中文、逗号和换行：
 
 ```csv
-name,group,enabled,listen_host,listen_port,remote_host,remote_port,protocol,through,interface,tcp_timeout,udp_timeout,tcp_keepalive,remark
-美国01,美国,true,0.0.0.0,2088,example.com,443,tcp_udp,,,,,,美国落地
+name,group,enabled,listen_host,listen_port,remote_host,remote_port,protocol,through,remark
+美国01,美国,true,0.0.0.0,2088,example.com,443,tcp_udp,,美国落地
 ```
 
-以公式字符开头的名称、分组及备注会增加前导单引号，防止电子表格公式注入；重新导入时自动还原。CSV 不改变全局网络设置，空高级参数采用全局值。
+以公式字符开头的名称、分组及备注会增加前导单引号，防止电子表格公式注入；重新导入时自动还原。旧版 CSV 中的超时列会被忽略。
 
 批量文本：
 
@@ -128,7 +149,7 @@ name,group,enabled,listen_host,listen_port,remote_host,remote_port,protocol,thro
 2089|1.1.1.1|443|tcp|备用线路
 ```
 
-最大单次导入 2 MB / 2000 条规则。预览 15 分钟有效，绑定当前会话和配置版本；预览后配置变化必须重新解析。存在无效条目时禁止整个导入。多个操作不会并发改写 Realm。
+最大单次导入 2 MB / 2000 条规则。预览 15 分钟有效，绑定当前会话和配置版本；预览后配置变化必须重新解析。存在无效条目时禁止整个导入。多个操作不会并发改写内核规则。
 
 ## 数据及备份
 
@@ -136,19 +157,17 @@ name,group,enabled,listen_host,listen_port,remote_host,remote_port,protocol,thro
 /opt/realm-panel/
 ├── backend/ frontend/ docker/ scripts/ tests/
 ├── docker-compose.yml
-├── vendor/realm
 └── data/
     ├── database/realm-panel.db
-    ├── realm/active.json
+    ├── forward/rules.json
+    ├── traffic/traffic.sqlite3
     ├── run/supervisor.sock
     ├── backups/*.rmpbak
     ├── logs/
     └── secrets/backup.key
 ```
 
-**请不要直接编辑 RealmPanel 生成的 Realm 配置文件。请通过 Web 后台修改规则。** 数据库是唯一事实来源，启动和下次应用时会重建配置。
-
-Realm 官方支持 JSON 和 TOML；本实现使用等价 JSON，以标准 JSON 编码避免字符串转义错误。字段按官方 v2.9.3 的 `src/conf/net.rs` 与 `src/conf/endpoint.rs` 校对。
+**请不要直接编辑 `forward/rules.json` 或 `table inet realmpanel`。请通过 Web 后台修改规则。** 数据库是唯一事实来源，启动、下次应用及每 30 秒的后台检查都会从中重建内核规则。
 
 `.rmpbak` 是 Fernet 认证加密的逻辑数据库快照（账号、Web 设置、分组、规则），密钥保存在 `data/secrets/backup.key`。下载备份时不会下载密钥，异地恢复前需单独安全保管密钥；密钥遗失则无法解密备份。备份不迁移登录会话。自动保留最近 30 份，可设为 10/20/30/50/100。
 
@@ -157,8 +176,8 @@ Realm 官方支持 JSON 和 TOML；本实现使用等价 JSON，以标准 JSON �
 ## 安全与架构
 
 - 两容器均为 host 网络，添加端口无需修改 Compose。
-- Web 没有 Docker Socket；Supervisor 只接受固定的状态、日志和重启操作。
-- 根文件系统只读、移除 Linux capabilities、禁止提升权限。核心仅保留绑定低端口及管理独立 nftables 流量计数表的权限（NET_BIND_SERVICE / NET_ADMIN）。
+- Web 没有 Docker Socket；Supervisor 只接受固定的状态、日志、流量和应用操作，不执行 Shell。
+- 根文件系统只读、移除 Linux capabilities、禁止提升权限。核心仅保留管理自身 nftables 表、`RMP-FORWARD` 链与连接跟踪所需的 NET_ADMIN / NET_RAW（NET_RAW 仅 iptables-legacy 主机需要）。Web 容器没有任何网络管理权限。
 - 所有 API 都位于随机管理路径下，未知路径统一 404，无公开 OpenAPI / Swagger。
 - Session 12 小时，HttpOnly + SameSite=Strict；HTTP 不强制 Secure，直接 HTTPS 请求时自动 Secure。
 - 修改操作验证 CSRF Token、同源请求标记和 Origin。五次失败锁定来源 IP 15 分钟。
@@ -170,7 +189,7 @@ Realm 官方支持 JSON 和 TOML；本实现使用等价 JSON，以标准 JSON �
 
 ```bash
 python -m pip install -r backend/requirements.txt
-python -m pytest tests/test_backend.py -q
+python -m pytest tests/test_backend.py tests/test_auth.py tests/test_traffic.py tests/test_forwarder.py -q
 cd frontend && npm ci && npm run build
 ```
 
@@ -179,7 +198,6 @@ cd frontend && npm ci && npm run build
 开发环境手动构建（不用于低配 VPS 安装）：
 
 ```bash
-python3 scripts/download-realm.py
 docker compose -f docker-compose.yml -f docker-compose.build.yml build
 ```
 
@@ -191,14 +209,18 @@ GitHub Actions 会执行后端测试、TypeScript 检查、前端构建、npm �
 
 **忘记地址或密码？** 使用 `rmpctl info` 或 `rmpctl reset-password`。白名单误锁用 `rmpctl reset-path`。
 
-**端口已占用？** 使用其他未占用端口。应用后由 Supervisor 检查 Realm 自己实际持有的 TCP/UDP socket，不能只靠其他进程正在监听来冒充成功。
+**端口已占用？** 本机已有进程监听该端口时，nftables 规则会被拒绝（否则会劫持该服务的外部流量）。规则生效后才有进程占用该端口时，后台检查会暂停这条转发并在概览显示原因。
+
+**规则已生效但外部无法访问？** 检查云厂商安全组是否放行监听端口；概览的「系统状态」会显示 `ip_forward`、`forward_filter`（FORWARD 放行链位置）和问题列表。使用 firewalld 等自带 nftables 转发拦截的防火墙时，需要在其中放行转发。
+
+**为什么切换到 nftables？** nftables 在内核中完成地址转换，数据包不复制到用户态，吞吐更高、CPU 更省、UDP 不丢包。代价是失去 Realm 的协议互转、出口网卡绑定及连接超时等用户态特性。
 
 **UDP 测试成功是否证明远端可用？** 发送完成不能证明远端应用正确响应。真实 UDP 转发验收使用回显服务验证请求及返回数据。
 
 **如何切换黑白主题？** 点击顶栏的太阳/月亮按钮，或在「设置 → 外观」选择亮色、暗色、跟随系统。偏好保存在当前浏览器。
 
-**为什么界面显示 0.9.5？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
+**为什么还不是 1.0？** 双 VPS、Excel 手工往返及完整虚拟机操作系统矩阵仍需要对应环境。未经执行的项目不会写成通过。
 
 ## 许可
 
-RealmPanel 使用 MIT License。Realm 为独立上游项目，其二进制与许可遵循 [zhboner/realm](https://github.com/zhboner/realm/tree/v2.9.3)。
+RealmPanel 使用 MIT License。0.10.0 起不再包含 Realm 二进制；转发由 Linux 内核 nftables 完成，核心镜像使用 Debian 的 nftables、iptables 与 conntrack-tools 软件包。

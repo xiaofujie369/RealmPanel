@@ -8,7 +8,7 @@ import sys
 from argon2 import PasswordHasher
 from backend import storage as s
 from backend import __version__
-from backend.models import generate
+from backend.models import generate, upgrade
 
 
 def random_password() -> str:
@@ -50,12 +50,12 @@ def main() -> None:
             db.execute('INSERT INTO users VALUES (1,?,?)', (name, PasswordHasher().hash(password)))
             s.put(db, 'web_port', port)
             s.put(db, 'web_path', path)
-            s.atomic(s.DATA / 'realm/active.json', json.dumps(generate([], s.get(db, 'network'))).encode())
+            s.atomic(s.DATA / 'forward/rules.json', json.dumps(generate([])).encode())
             s.atomic(s.DATA / 'secrets/install-info.txt', f'Web 端口：{port}\nWeb 路径：{path}\n管理员账号：{name}\n管理员密码：{password}\n'.encode())
             print(f'Web 端口：{port}\nWeb 路径：{path}\n管理员账号：{name}\n管理员密码：{password}')
         elif args.command == 'info':
             row = db.execute('SELECT username FROM users LIMIT 1').fetchone()
-            print(f'RealmPanel {__version__} / Realm 2.9.3\nWeb 端口：{s.get(db, "web_port")}\nWeb 路径：{s.get(db, "web_path")}\n管理员：{row[0]}\n规则：{len(s.rules(db))}\n安装目录：/opt/realm-panel')
+            print(f'RealmPanel {__version__} / nftables 内核转发\nWeb 端口：{s.get(db, "web_port")}\nWeb 路径：{s.get(db, "web_path")}\n管理员：{row[0]}\n规则：{len(s.rules(db))}\n安装目录：/opt/realm-panel')
         elif args.command == 'reset-password':
             row = db.execute('SELECT username FROM users LIMIT 1').fetchone()
             name = ('' if args.auto else input(f'新账号 [回车保留 {row[0]}]：')) or row[0]
@@ -83,6 +83,10 @@ def main() -> None:
                 for table in ('users', 'settings', 'groups', 'forward_rules'):
                     target.execute(f'DELETE FROM {table}')
                     for row in payload[table]:
+                        if table == 'forward_rules':
+                            row = {**row, 'body': json.dumps(upgrade(json.loads(row['body'])), ensure_ascii=False)}
+                        if table == 'settings' and row['key'] == 'network':
+                            continue
                         columns = list(row)
                         allowed = {r[1] for r in target.execute(f'PRAGMA table_info({table})')}
                         if not set(columns) <= allowed:
@@ -90,7 +94,7 @@ def main() -> None:
                         target.execute(f'INSERT INTO {table} ({",".join(columns)}) VALUES ({",".join("?" for _ in columns)})', tuple(row.values()))
                 target.execute('DELETE FROM sessions')
             manager.apply(restore, '完整恢复前备份')
-            print('完整数据库已恢复，重启 Web 后将从数据库重新生成 Realm 配置。')
+            print('完整数据库已恢复，重启 Web 后将从数据库重新生成 nftables 转发规则。')
 
 
 if __name__ == '__main__':

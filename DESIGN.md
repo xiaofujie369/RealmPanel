@@ -1,3 +1,5 @@
+> **说明（0.10.0）**：本文为最初的 Realm 版设计原文，保留作历史参考。转发核心现已改为 Linux 内核 nftables，实际行为以 [README](README.md) 为准。
+
 # RealmPanel
 
 基于 Realm v2.9.3 的 Docker 化 TCP / UDP 转发管理面板。

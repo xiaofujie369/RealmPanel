@@ -21,7 +21,7 @@ for attempt in range(60):
                     break
                 response += chunk
         assert json.loads(response.split(b'\r\n\r\n', 1)[1])['healthy']
-        print('✓ Web、Realm 进程、配置监听检查通过')
+        print('✓ Web、nftables 转发核心、规则同步检查通过')
         break
     except Exception:
         time.sleep(1)

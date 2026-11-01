@@ -103,7 +103,9 @@ try:
     body = {'name': '验收-TCP+UDP', 'group': '验收', 'listen_host': '127.0.0.1', 'listen_port': port, 'remote_host': '127.0.0.1', 'remote_port': target_port, 'protocol': 'tcp_udp', 'enabled': True, 'remark': '验收后自动清理'}
     rid = api('rules', 'POST', body)['id']; owned.append(rid)
     tcp_echo(port); udp_echo(port)
-    record('真实 TCP+UDP 双协议转发')
+    core = api('status')
+    assert core['engine'] == 'nftables' and core['healthy'] and core['forwards'] == 2, core
+    record('真实 TCP+UDP 双协议 nftables 转发')
     rule_uuid = api(f'rules/{rid}')['uuid']
     measured = api('traffic')
     assert measured['available'], measured
@@ -121,12 +123,12 @@ try:
     record('编辑监听端口，旧端口关闭、新端口生效')
     body['protocol'] = 'udp'
     api(f'rules/{rid}', 'PUT', body); tcp_echo(new_port, False); udp_echo(new_port)
-    record('UDP Only 不监听 TCP，UDP 真实转发')
+    record('UDP Only 不转发 TCP，UDP 真实转发')
     body['protocol'] = 'tcp'
     api(f'rules/{rid}', 'PUT', body); tcp_echo(new_port)
     with socket.socket(type=socket.SOCK_DGRAM) as sock:
         sock.bind(('127.0.0.1', new_port))
-    record('TCP Only 不监听 UDP')
+    record('TCP Only 不占用、不转发 UDP')
     clone = api(f'rules/{rid}/clone', 'POST')['id']; owned.append(clone)
     cloned = api(f'rules/{clone}'); tcp_echo(cloned['listen_port'])
     record('复制规则并寻找可用端口')
@@ -142,7 +144,7 @@ try:
     assert api(f'rules/{rid}')['listen_port'] == new_port
     tcp_echo(new_port)
     occupied.close()
-    record('真实端口占用导致应用失败，数据库与核心自动回滚')
+    record('本机进程占用端口时拒绝劫持，数据库与核心自动回滚')
     exported = api('export/json')
     api('batch', 'POST', {'ids': owned, 'action': 'delete'})
     owned.clear()
@@ -182,7 +184,7 @@ try:
     assert api('import/apply', 'POST', {'token': preview['token']})['imported'] == 50
     owned.extend(r['id'] for r in api('rules'))
     assert api('export/json')['rules'] == exported50['rules']
-    record('50/50 JSON 和 CSV 实际 API 导入导出，中文、协议、高级参数完整保留')
+    record('50/50 JSON 和 CSV 实际 API 导入导出，中文、协议完整保留，旧版 Realm 参数兼容导入')
     api('batch', 'POST', {'ids': owned, 'action': 'delete'}); owned.clear()
     api('groups', 'POST', {'name': '验收', 'delete': True})
     api('auth/logout', 'POST')

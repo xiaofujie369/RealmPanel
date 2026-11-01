@@ -1,8 +1,12 @@
-"""Validated portable model shared by API, import and configuration generation."""
+"""Validated portable model shared by API, import and forwarding plan generation."""
 import ipaddress
 import re
 from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+
+# Realm-only options from schema 1. nftables has no connect timeout or keepalive and the
+# egress interface follows the routing table, so they are accepted on import and dropped.
+LEGACY_KEYS = ('tcp_timeout', 'udp_timeout', 'tcp_keepalive', 'interface')
 
 
 class Rule(BaseModel):
@@ -16,11 +20,18 @@ class Rule(BaseModel):
     remote_port: int = Field(ge=1, le=65535)
     protocol: Literal['tcp', 'udp', 'tcp_udp'] = 'tcp_udp'
     through: str = ''
-    interface: str = Field(default='', max_length=15, pattern=r'^[a-zA-Z0-9_.:-]*$')
-    tcp_timeout: int | None = Field(default=None, ge=1, le=86400)
-    udp_timeout: int | None = Field(default=None, ge=1, le=86400)
-    tcp_keepalive: int | None = Field(default=None, ge=0, le=86400)
     remark: str = Field(default='', max_length=2000)
+
+    @model_validator(mode='before')
+    @classmethod
+    def legacy(cls, data):
+        if isinstance(data, dict) and any(k in data for k in LEGACY_KEYS):
+            data = dict(data)
+            if (data.get('interface') or '').strip():
+                raise ValueError('nftables 转发由系统路由决定出口网卡，不支持 Interface 参数；请清空后导入')
+            for key in LEGACY_KEYS:
+                data.pop(key, None)
+        return data
 
     @field_validator('listen_host')
     @classmethod
@@ -44,12 +55,23 @@ class Rule(BaseModel):
                 raise ValueError('目标地址必须是 IPv4、IPv6 或有效域名')
             return name
 
-
-class Network(BaseModel):
-    model_config = ConfigDict(extra='forbid')
-    tcp_timeout: int = Field(default=5, ge=1, le=86400)
-    udp_timeout: int = Field(default=30, ge=1, le=86400)
-    tcp_keepalive: int = Field(default=15, ge=0, le=86400)
+    @model_validator(mode='after')
+    def families(self):
+        listen = ipaddress.ip_address(self.listen_host)
+        families = {4, 6} if self.listen_host == '::' else {listen.version}
+        try:
+            remote = ipaddress.ip_address(self.remote_host)
+        except ValueError:
+            remote = None
+        if remote and remote.version not in families:
+            raise ValueError('nftables 不能在 IPv4 与 IPv6 之间转换；目标地址需与监听地址同族（监听 :: 可同时接收两种）')
+        if remote and remote.is_loopback and not listen.is_loopback:
+            raise ValueError('外部流量不能转发到回环地址；请填写本机网卡 IP，或监听 127.0.0.1')
+        if self.through:
+            version = ipaddress.ip_address(self.through).version
+            if version not in families or (remote and remote.version != version):
+                raise ValueError('出口源 IP 必须与监听及目标地址同族')
+        return self
 
 
 def overlap(a: dict, b: dict) -> bool:
@@ -63,20 +85,15 @@ def address(host: str, port: int) -> str:
     return f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
 
 
-def generate(rules: list[dict], settings: dict) -> dict:
-    endpoints = []
+def generate(rules: list[dict]) -> dict:
+    """The forwarding plan handed to the core; disabled rules keep their traffic counters."""
+    items = []
     for raw in rules:
         r = Rule.model_validate({k: v for k, v in raw.items() if k in Rule.model_fields})
-        if not r.enabled:
-            continue
-        network = {**Network.model_validate(settings).model_dump(), 'no_tcp': r.protocol == 'udp', 'use_udp': r.protocol != 'tcp'}
-        for key in Network.model_fields:
-            if getattr(r, key) is not None:
-                network[key] = getattr(r, key)
-        endpoint = {'listen': address(r.listen_host, r.listen_port), 'remote': address(r.remote_host, r.remote_port), 'network': network}
-        if r.through:
-            endpoint['through'] = r.through
-        if r.interface:
-            endpoint['interface'] = r.interface
-        endpoints.append(endpoint)
-    return {'log': {'level': 'info'}, 'network': Network.model_validate(settings).model_dump(), 'endpoints': endpoints}
+        items.append({'uuid': raw['uuid'], 'name': r.name, 'enabled': r.enabled, 'listen_host': r.listen_host, 'listen_port': r.listen_port, 'remote_host': r.remote_host, 'remote_port': r.remote_port, 'protocol': r.protocol, 'through': r.through})
+    return {'engine': 'nftables', 'rules': items}
+
+
+def upgrade(body: dict) -> dict:
+    """Stored rules from the Realm era: drop options nftables cannot honour."""
+    return {k: v for k, v in body.items() if k not in LEGACY_KEYS}

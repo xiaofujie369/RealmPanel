@@ -3,7 +3,7 @@ services:
   realm-panel-core:
     build:
       context: .
-      dockerfile: docker/Dockerfile.realm
+      dockerfile: docker/Dockerfile.core
   realm-panel-web:
     build:
       context: .

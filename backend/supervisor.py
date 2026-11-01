@@ -1,82 +1,48 @@
-"""Fixed-operation Unix socket supervisor. No Docker socket or shell execution."""
+"""Fixed-operation Unix socket supervisor for the nftables engine. No Docker socket or shell."""
 import collections
 import json
 import os
 import signal
-import socket
 import socketserver
-import subprocess
 import threading
 import time
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-import psutil
+from urllib.parse import parse_qs, urlparse
+from forwarder import ApplyError, Engine, run
 from traffic import Meter
 
 ROOT = Path('/app/data')
-CONFIG = ROOT / 'realm/active.json'
-PROC: subprocess.Popen | None = None
+PLAN = ROOT / 'forward/rules.json'
 LOCK = threading.RLock()
 LINES: collections.deque[str] = collections.deque(maxlen=1000)
-METER: Meter | None = None
+STARTED = time.time()
+ENGINE: Engine | None = None
 
 
-def reader(proc: subprocess.Popen) -> None:
-    for line in proc.stdout:
-        LINES.append(line.rstrip())
-        print(line, end='', flush=True)
+def log(message: str) -> None:
+    line = f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")} {message}'
+    LINES.append(line)
+    print(line, flush=True)
 
 
-def stop() -> None:
-    global PROC
-    if PROC and PROC.poll() is None:
-        PROC.terminate()
-        try:
-            PROC.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            PROC.kill()
-            PROC.wait()
-    if METER:
-        METER.snapshot()
-        METER.configure([])
+def rules() -> list[dict]:
+    return json.loads(PLAN.read_text())['rules'] if PLAN.exists() else []
 
 
-def start() -> None:
-    global PROC
-    stop()
-    if METER:
-        manifest = ROOT / 'realm/meter-rules.json'
-        METER.configure(json.loads(manifest.read_text()) if manifest.exists() else [])
-    if not json.loads(CONFIG.read_text())['endpoints']:
-        PROC = None
-        return
-    PROC = subprocess.Popen(['/usr/local/bin/realm', '-c', str(CONFIG)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    threading.Thread(target=reader, args=(PROC,), daemon=True).start()
+def version() -> str:
+    try:
+        return run('nft', '--version').stdout.split()[1].lstrip('v')
+    except (OSError, RuntimeError, IndexError):
+        return ''
+
+
+NFT_VERSION = version()
 
 
 def status() -> dict:
-    alive = PROC is not None and PROC.poll() is None
-    result = {'running': alive, 'healthy': False, 'realm_version': '2.9.3', 'pid': PROC.pid if alive else None, 'listeners': [], 'missing': [], 'memory_mb': 0, 'uptime': 0, 'cpu_percent': 0}
-    if not alive:
-        if CONFIG.exists() and not json.loads(CONFIG.read_text())['endpoints']:
-            result.update(healthy=True, idle=True)
-        return result
-    try:
-        proc = psutil.Process(PROC.pid)
-        conns = proc.net_connections(kind='inet')
-        listeners = {(c.laddr.ip, c.laddr.port, 'tcp' if c.type == socket.SOCK_STREAM else 'udp') for c in conns if c.laddr and (c.type == socket.SOCK_DGRAM or c.status == psutil.CONN_LISTEN)}
-        result['listeners'] = sorted(listeners)
-        conf = json.loads(CONFIG.read_text())
-        for endpoint in conf['endpoints']:
-            host, port = endpoint['listen'].rsplit(':', 1)
-            for proto in ('tcp', 'udp'):
-                expected = not endpoint['network']['no_tcp'] if proto == 'tcp' else endpoint['network']['use_udp']
-                if expected and (host.strip('[]'), int(port), proto) not in listeners:
-                    result['missing'].append(f'{proto} {endpoint["listen"]}')
-        result.update(healthy=not result['missing'], memory_mb=round(proc.memory_info().rss / 1048576, 2), uptime=int(time.time() - proc.create_time()), cpu_percent=proc.cpu_percent(interval=0.05))
-    except (psutil.Error, OSError, ValueError) as exc:
-        result['error'] = str(exc)
-    return result
+    return {**ENGINE.status(), 'nft_version': NFT_VERSION, 'uptime': int(time.time() - STARTED), 'rules_file': PLAN.exists()}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -90,33 +56,31 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == '/logs':
                 self.reply(200, {'lines': list(LINES)})
             elif self.path == '/traffic':
-                self.reply(200, METER.snapshot())
+                self.reply(200, ENGINE.meter.snapshot())
             else:
                 self.reply(404, {})
 
     def do_POST(self) -> None:
+        url = urlparse(self.path)
         with LOCK:
-            if self.path != '/restart':
+            if url.path != '/apply':
                 self.reply(404, {})
                 return
+            strict = parse_qs(url.query).get('strict') == ['1']
             try:
-                start()
-                deadline = time.monotonic() + 8
-                while time.monotonic() < deadline:
-                    time.sleep(0.2)
-                    state = status()
-                    if state['healthy']:
-                        time.sleep(0.3)
-                        state = status()
-                        if state['healthy']:
-                            self.reply(200, state)
-                            return
-                self.reply(409, {**state, 'error': 'Realm 启动或监听检查失败', 'logs': list(LINES)[-15:]})
+                ENGINE.apply(rules(), strict=strict)
+                state = status()
+                self.reply(200, state)
+            except ApplyError as exc:
+                log('拒绝应用：' + str(exc))
+                self.reply(409, {**status(), 'error': str(exc)})
             except Exception as exc:
-                self.reply(500, {'error': str(exc)})
+                ENGINE.error = str(exc)
+                log('应用失败：' + str(exc))
+                self.reply(500, {**status(), 'error': str(exc), 'logs': list(LINES)[-15:]})
 
     def reply(self, code: int, body: dict) -> None:
-        payload = json.dumps(body).encode()
+        payload = json.dumps(body, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header('Content-Type', 'application/json')
         self.send_header('Content-Length', str(len(payload)))
@@ -125,29 +89,45 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    global METER
-    METER = Meter(ROOT / 'traffic')
+    global ENGINE
+    ENGINE = Engine(Meter(ROOT / 'traffic'), log=log)
     ROOT.joinpath('run').mkdir(parents=True, exist_ok=True)
     path = ROOT / 'run/supervisor.sock'
     path.unlink(missing_ok=True)
     server = socketserver.UnixStreamServer(str(path), Handler)
     os.chmod(path, 0o660)
+    log(f'nftables 转发核心启动（nft {NFT_VERSION}）')
+    # 0.9.x left its Realm-era counter table behind; totals already live in SQLite.
+    if run('nft', 'delete', 'table', 'inet', 'realmpanel_meter', check=False).returncode == 0:
+        log('已移除旧版 realmpanel_meter 计数表')
+
     def terminate(*_) -> None:
-        stop()
+        with LOCK:
+            try:
+                ENGINE.teardown()
+            except Exception as exc:
+                log('清理失败：' + str(exc))
         os._exit(0)
     signal.signal(signal.SIGTERM, terminate)
-    if CONFIG.exists():
-        start()
+    signal.signal(signal.SIGINT, terminate)
+
     def monitor() -> None:
+        # Persist counters; every 30 s re-resolve domains, re-check port owners and
+        # repair our objects if something outside (e.g. a Docker restart) removed them.
+        tick = 0
         while True:
-            time.sleep(5)
             with LOCK:
-                METER.snapshot()
-                manifest = ROOT / 'realm/meter-rules.json'
-                if manifest.exists():
-                    METER.configure(json.loads(manifest.read_text()))
-                if CONFIG.exists() and (PROC is None or PROC.poll() is not None):
-                    start()
+                try:
+                    if tick % 6 == 0 and PLAN.exists():
+                        if not ENGINE.table_exists():
+                            ENGINE.applied = None
+                        ENGINE.apply(rules())
+                    ENGINE.meter.snapshot()
+                except Exception as exc:
+                    ENGINE.error = str(exc)
+                    log('后台检查失败：' + str(exc))
+            tick += 1
+            time.sleep(5)
     threading.Thread(target=monitor, daemon=True).start()
     server.serve_forever()
 

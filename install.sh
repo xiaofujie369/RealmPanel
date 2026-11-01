@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# RealmPanel 预编译镜像安装器；VPS 不编译前后端。
+# RealmPanel（nftables 内核转发）预编译镜像安装器；VPS 不编译前后端。
 set -Eeuo pipefail
 umask 077
 RMP_REPO=${RMP_REPO:-xiaofujie369/RealmPanel}
@@ -124,6 +124,15 @@ install_docker_packages() {
   fi
   docker compose version
 }
+ensure_forwarding() {
+  # nftables DNAT needs nf_tables and the kernel routing packets between interfaces.
+  modprobe nf_tables 2>/dev/null || true
+  [[ -d /sys/module/nf_tables ]] || die '内核不支持 nftables（nf_tables 不可用）；OpenVZ/LXC 等受限容器无法使用内核转发。'
+  printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/90-realm-panel.conf
+  sysctl -q -w net.ipv4.ip_forward=1 || die '无法开启 IPv4 转发（net.ipv4.ip_forward）。'
+  log '✓ 已开启 IPv4 转发并写入 /etc/sysctl.d/90-realm-panel.conf。'
+  [[ $(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null) == 1 ]] || log '提示：未自动开启 IPv6 转发（会影响依赖路由通告的 IPv6 网络），需要 IPv6 转发时请手动设置 net.ipv6.conf.all.forwarding=1。'
+}
 ensure_docker() {
   install_docker_packages
   if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
@@ -195,7 +204,8 @@ main() {
   install_dependencies
   log '[3/9] 配置 1 GB Swap 交换空间'
   ensure_swap
-  log '[4/9] 检查并自动安装 Docker / Compose'
+  log '[4/9] 检查 nftables 内核支持、开启转发，并自动安装 Docker / Compose'
+  ensure_forwarding
   ensure_docker
   log '[5/9] 下载并校验 GitHub Release'
   download_release
@@ -205,7 +215,7 @@ main() {
   tar -C "$WORK/source" -cf - . | tar -C "$INSTALL_DIR" -xf -
   cd "$INSTALL_DIR"
   printf 'RMP_VERSION=%s\n' "$RELEASE_VERSION" > .env
-  mkdir -p data/{database,realm,run,backups,logs,secrets}
+  mkdir -p data/{database,forward,run,backups,logs,secrets,traffic}
   chmod 700 data data/secrets
   log '[7/9] 初始化数据库与管理员账号'
   if [[ ${1:-} == --yes || ! -e /dev/tty ]]; then

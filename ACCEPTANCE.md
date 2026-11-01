@@ -1,5 +1,18 @@
 # 验收记录
 
+## 0.10.0 nftables 内核转发
+
+验收日期：2026-11-01，环境：Ubuntu 24.04.5 LTS、内核 6.8、x86_64、2 vCPU / 2 GB，主机已运行其他 Docker 与网络业务（iptables-nft，FORWARD 默认 DROP）。
+
+- 性能对比（独立网络命名空间、veth、iperf3 4 并发，各两轮）：TCP realm 17.84 / 18.44 Gbit/s，nftables 25.72 / 27.51 Gbit/s；UDP 800 Mbit/s 时 realm 丢包 15.03% / 25.20%，nftables 0.00% / 0.00%。
+- 25 项后端单元测试通过（新增转发规划、nft 脚本范围、本机端口占用解析、DOCKER-USER 放行、连接跟踪清理、Realm 数据迁移）。
+- 引擎在三个网络命名空间的真实内核中通过 18 项检查：Docker 式 FORWARD DROP 下的 IPv4 TCP/UDP、指定 SNAT 源地址、TCP Only、`::` 监听下域名按协议族分别转发到 A / AAAA、IPv6 UDP、本机发起连接、计数器、暂停与恢复保留累计、`0.0.0.0` 与 `[::]` 监听进程的端口保护、只新增自身表、停止时完整清理。
+- 本机 Docker 构建两镜像（前端 vue-tsc strict 检查通过）并全新部署到 `/opt/realm-panel`，健康检查通过；`tests/live_acceptance.py` 16 项真实 TCP/UDP 与 API 验收全部通过。
+- 外部客户端（独立命名空间经 veth 接入主机）→ 主机 DNAT → `example.com:80` 域名目标返回 HTTP 200，流量计数正确；`DOCKER-USER` 中只有一条跳转到 `RMP-FORWARD`，链内只放行该规则端口。
+- `rmpctl stop` 后 `table inet realmpanel`、`RMP-FORWARD` 及跳转全部移除，主机原有表与 Docker 规则不变；`rmpctl start` 后自动重建。主机其他容器服务在整个过程中保持可用。
+
+尚未执行：GitHub Actions 双架构构建与公开 Release、从 0.9.5 实例的在线升级（`rmpctl update`）、整机重启验证。
+
 ## 0.9.5 简洁界面与单规则流量
 
 - [GitHub Actions 36961069942](https://github.com/xiaofujie369/RealmPanel/actions/runs/36961069942) 全部通过：19 项后端测试、前端 strict 构建、两架构镜像、真实 TCP/UDP 及流量计数、全新安装与升级。
