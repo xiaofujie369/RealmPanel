@@ -119,8 +119,6 @@ def main() -> None:
             with LOCK:
                 try:
                     if tick % 6 == 0 and PLAN.exists():
-                        if not ENGINE.table_exists():
-                            ENGINE.applied = None
                         ENGINE.apply(rules())
                     ENGINE.meter.snapshot()
                 except Exception as exc:

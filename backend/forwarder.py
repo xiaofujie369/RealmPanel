@@ -13,12 +13,16 @@ from pathlib import Path
 
 TABLE = 'realmpanel'
 IPT_CHAIN = 'RMP-FORWARD'
-CHAINS = {
-    'prerouting': 'type nat hook prerouting priority dstnat; policy accept;',
-    'output': 'type nat hook output priority -100; policy accept;',
-    'postrouting': 'type nat hook postrouting priority srcnat; policy accept;',
-    'count_out': 'type filter hook postrouting priority 300; policy accept;',
-    'count_in': 'type filter hook input priority 300; policy accept;',
+MAPS = ('dnat_ports', 'snat_ports', 'count_ports')
+# Base chains never change after creation: every packet does one map lookup by
+# (protocol, port) and jumps to that port's own small chains. Changing one rule
+# therefore only rewrites the chains and map elements of the ports it uses.
+BASE = {
+    'prerouting': ('type nat hook prerouting priority dstnat; policy accept;', ['fib daddr type local meta l4proto . th dport vmap @dnat_ports']),
+    'output': ('type nat hook output priority -100; policy accept;', ['fib daddr type local meta l4proto . th dport vmap @dnat_ports']),
+    'postrouting': ('type nat hook postrouting priority srcnat; policy accept;', ['oifname "lo" return', 'ct status dnat meta l4proto . ct original proto-dst vmap @snat_ports']),
+    'count_out': ('type filter hook postrouting priority 300; policy accept;', ['ct status dnat meta l4proto . ct original proto-dst vmap @count_ports']),
+    'count_in': ('type filter hook input priority 300; policy accept;', ['iifname != "lo" ct status dnat ct direction original meta l4proto . ct original proto-dst vmap @count_ports']),
 }
 PROC = Path('/proc')
 
@@ -128,8 +132,8 @@ def sysctl(name: str, proc: Path = PROC) -> str:
         return ''
 
 
-def plan(rules: list[dict], resolver=resolve) -> tuple[list[Endpoint], list[str]]:
-    """Turn panel rules into kernel endpoints; returns problems instead of raising."""
+def plan(rules: list[dict], resolver=resolve) -> tuple[list[Endpoint], list[tuple[str, str]]]:
+    """Turn panel rules into kernel endpoints; returns (rule uuid, problem) instead of raising."""
     endpoints, problems = [], []
     for rule in rules:
         if not rule['enabled']:
@@ -140,7 +144,7 @@ def plan(rules: list[dict], resolver=resolve) -> tuple[list[Endpoint], list[str]
         targets = {f: resolver(rule['remote_host'], f) for f in families}
         targets = {f: t for f, t in targets.items() if t}
         if not targets:
-            problems.append(f'{rule["name"]}：目标 {rule["remote_host"]} 没有可用于 {rule["listen_host"]} 的 {"/".join("IPv" + str(f) for f in families) or "同族"} 地址')
+            problems.append((rule['uuid'], f'{rule["name"]}：目标 {rule["remote_host"]} 没有可用于 {rule["listen_host"]} 的 {"/".join("IPv" + str(f) for f in families) or "同族"} 地址'))
             continue
         protocols = ('tcp', 'udp') if rule['protocol'] == 'tcp_udp' else (rule['protocol'],)
         for family, target in targets.items():
@@ -156,32 +160,45 @@ def _match(endpoint: Endpoint, ct: bool) -> str:
     return f'ct original {ip} daddr {endpoint.host}' if ct else f'{ip} daddr {endpoint.host}'
 
 
-def script(endpoints: list[Endpoint], counters: list[str], existing: set[str], table_exists: bool) -> str:
+def base_script() -> list[str]:
     lines = [f'add table inet {TABLE}']
-    for chain, spec in CHAINS.items():
-        lines.append(f'add chain inet {TABLE} {chain} {{ {spec} }}')
-        if table_exists:
-            lines.append(f'flush chain inet {TABLE} {chain}')
-    for name in counters:
-        if name not in existing:
-            lines.append(f'add counter inet {TABLE} {name}')
-    lines.append(f'add rule inet {TABLE} postrouting oifname "lo" return')
-    for e in endpoints:
+    lines += [f'add map inet {TABLE} {name} {{ type inet_proto . inet_service : verdict; }}' for name in MAPS]
+    for chain, (spec, rules) in BASE.items():
+        lines += [f'add chain inet {TABLE} {chain} {{ {spec} }}', f'flush chain inet {TABLE} {chain}']
+        lines += [f'add rule inet {TABLE} {chain} {rule}' for rule in rules]
+    return lines
+
+
+def port_chains(key: tuple[str, int]) -> dict[str, str]:
+    proto, port = key
+    return {'dnat_ports': f'd_{proto}_{port}', 'snat_ports': f's_{proto}_{port}', 'count_ports': f'c_{proto}_{port}'}
+
+
+def port_script(key: tuple[str, int], endpoints: tuple['Endpoint', ...] | None) -> list[str]:
+    """Rewrite, or with no endpoints remove, the chains of one (protocol, port)."""
+    proto, port = key
+    chains = port_chains(key)
+    element = f'{proto} . {port}'
+    lines = []
+    if not endpoints:
+        for name, chain in chains.items():
+            lines += [f'delete element inet {TABLE} {name} {{ {element} }}', f'flush chain inet {TABLE} {chain}', f'delete chain inet {TABLE} {chain}']
+        return lines
+    body = {name: [] for name in chains}
+    # Specific listen addresses before wildcards: the first matching DNAT wins.
+    for e in sorted(endpoints, key=lambda e: (e.host is None, e.family, e.host or '')):
         ip = 'ip' if e.family == 4 else 'ip6'
         destination = f'{e.target}:{e.target_port}' if e.family == 4 else f'[{e.target}]:{e.target_port}'
-        dnat = f'{_match(e, False)} fib daddr type local meta l4proto {e.proto} th dport {e.port} dnat {ip} to {destination}'
-        lines.append(f'add rule inet {TABLE} prerouting {dnat}')
-        lines.append(f'add rule inet {TABLE} output {dnat}')
+        body['dnat_ports'].append(f'{_match(e, False)} meta l4proto {proto} dnat {ip} to {destination}')
         source = f'snat {ip} to {e.through}' if e.through else 'masquerade'
-        tracked = f'{_match(e, True)} meta l4proto {e.proto} ct original proto-dst {e.port} ct status dnat'
-        lines.append(f'add rule inet {TABLE} postrouting {ip} daddr {e.target} th dport {e.target_port} {tracked} {source}')
-        rx, tx = counter_name(e.rule, 'rx'), counter_name(e.rule, 'tx')
-        lines.append(f'add rule inet {TABLE} count_out {tracked} ct direction original counter name {rx}')
-        lines.append(f'add rule inet {TABLE} count_out {tracked} ct direction reply counter name {tx}')
-        lines.append(f'add rule inet {TABLE} count_in iifname != "lo" {tracked} ct direction original counter name {rx}')
-    for name in sorted(existing - set(counters)):
-        lines.append(f'delete counter inet {TABLE} {name}')
-    return '\n'.join(lines) + '\n'
+        body['snat_ports'].append(f'{_match(e, True)} {ip} daddr {e.target} {proto} dport {e.target_port} {source}')
+        body['count_ports'].append(f'{_match(e, True)} ct direction original counter name {counter_name(e.rule, "rx")}')
+        body['count_ports'].append(f'{_match(e, True)} ct direction reply counter name {counter_name(e.rule, "tx")}')
+    for name, chain in chains.items():
+        lines += [f'add chain inet {TABLE} {chain}', f'flush chain inet {TABLE} {chain}']
+        lines += [f'add rule inet {TABLE} {chain} {rule}' for rule in body[name]]
+        lines.append(f'add element inet {TABLE} {name} {{ {element} : jump {chain} }}')
+    return lines
 
 
 def run(*args, script: str | None = None, check: bool = True) -> subprocess.CompletedProcess:
@@ -256,9 +273,12 @@ class Engine:
         self.resolved: dict[tuple, str] = {}
         self.proc = proc
         self.active: dict[tuple, Endpoint] = {}
+        self.ports: dict[tuple, tuple] = {}
+        self.counters: set[str] = set()
+        self.seen: dict[str, dict] = {}
+        self.ready = False
         self.problems: list[str] = []
         self.warnings: list[str] = []
-        self.applied: tuple | None = None
         self.error: str | None = None
         self.filters = {4: ForwardFilter(4, runner), 6: ForwardFilter(6, runner)}
 
@@ -278,55 +298,81 @@ class Engine:
         return self.runner('nft', 'list', 'table', 'inet', TABLE, check=False).returncode == 0
 
     def apply(self, rules: list[dict], strict: bool = False) -> None:
-        """Atomically replace our table. strict: reject new or changed endpoints that cannot work."""
+        """Bring the kernel to `rules`, touching only ports whose endpoints changed.
+
+        strict (a user edit): reject problems of rules that are new or changed in
+        this request; problems of untouched rules are reported, never blocking.
+        """
         endpoints, problems = plan(rules, self.resolve)
+        changed = {r['uuid'] for r in rules if self.seen.get(r['uuid']) != r}
         listeners = local_listeners(self.proc)
-        accepted, rejected = [], []
+        accepted, reported = [], [msg for _, msg in problems]
+        rejected = [msg for uid, msg in problems if strict and uid in changed]
         for e in endpoints:
             owner = occupied(e, listeners)
-            if owner:
-                message = f'{e.name}：{e.proto.upper()} {e.listen} 已被本机进程占用（{owner}），nftables 不会劫持该端口'
-                fresh = self.active.get(e.key) is None or self.active[e.key].value != e.value
-                (rejected if strict and fresh else problems).append(message)
-            else:
+            if not owner:
                 accepted.append(e)
-        if strict and sysctl('net.ipv4.ip_forward', self.proc) != '1' and any(e.family == 4 for e in accepted):
+                continue
+            message = f'{e.name}：{e.proto.upper()} {e.listen} 已被本机进程占用（{owner}），nftables 不会劫持该端口'
+            (rejected if strict and e.rule in changed else reported).append(message)
+        if strict and sysctl('net.ipv4.ip_forward', self.proc) != '1' and any(e.family == 4 and e.rule in changed for e in accepted):
             rejected.append('系统未开启 IPv4 转发（net.ipv4.ip_forward=0）')
-        if strict:
-            rejected += problems
         if rejected:
             raise ApplyError('；'.join(dict.fromkeys(rejected)))
-        counters = sorted(counter_name(r['uuid'], d) for r in rules for d in ('rx', 'tx'))
-        exists = self.table_exists()
-        existing = self.meter.read() if exists else {}
-        self.meter.accumulate(existing)
-        text = script(accepted, counters, set(existing), exists)
+
+        grouped: dict[tuple, list] = {}
+        for e in accepted:
+            grouped.setdefault((e.proto, e.port), []).append(e)
+        desired = {k: tuple(sorted(v, key=lambda e: (e.family, e.host or '', e.rule))) for k, v in grouped.items()}
+        counters = {counter_name(r['uuid'], d) for r in rules for d in ('rx', 'tx')}
+
+        lines = []
+        if not self.ready or not self.table_exists():
+            # Start (or our table vanished): build once, keeping accumulated traffic.
+            if self.table_exists():
+                self.meter.accumulate(self.meter.read())
+                lines.append(f'delete table inet {TABLE}')
+            lines += base_script()
+            self.ports, self.counters = {}, set()
+        created = sorted(counters - self.counters)
+        lines += [f'add counter inet {TABLE} {name}' for name in created]
+        keys = sorted(k for k in set(desired) | set(self.ports) if desired.get(k) != self.ports.get(k))
+        for key in keys:
+            lines += port_script(key, desired.get(key))
+        obsolete = sorted(self.counters - counters)
+        if obsolete:
+            self.meter.accumulate({k: v for k, v in self.meter.read().items() if k in obsolete})
+        lines += [f'delete counter inet {TABLE} {name}' for name in obsolete]
+        if lines:
+            self.nft('-f', '-', script='\n'.join(lines) + '\n')
+            self.meter.created(created)
+            self.ready = True
+            if keys:
+                names = sorted({e.name for k in keys for e in desired.get(k, ()) + self.ports.get(k, ())})
+                ports = '、'.join(f'{p}/{n}' for p, n in keys[:8]) + ('…' if len(keys) > 8 else '')
+                more = '…' if len(names) > 5 else ''
+                self.log(f'已更新 {len(keys)} 个端口（{ports}），涉及规则：{"、".join(names[:5])}{more}；其余 {len(set(desired) - set(keys))} 个端口未改动')
         for family, flt in self.filters.items():
             try:
                 flt.sync(accepted)
             except (OSError, RuntimeError) as exc:
                 flt.state = 'error'
-                problems.append(f'IPv{family} FORWARD 放行规则同步失败：{exc}')
-        signature = (tuple(accepted), tuple(counters))
-        if signature != self.applied or not exists:
-            self.nft('-f', '-', script=text)
-            self.meter.created([c for c in counters if c not in existing])
-            self.applied = signature
-            self.log(f'已应用 nftables 转发：{len(accepted)} 个端点')
+                reported.append(f'IPv{family} FORWARD 放行规则同步失败：{exc}')
         new = {e.key: e for e in accepted}
-        stale = [e for k, e in self.active.items() if k not in new or new[k].value != e.value]
-        for e in stale:
-            self.drop_connections(e)
-        self.active = new
+        for e in self.active.values():
+            if e.key not in new or new[e.key].value != e.value:
+                self.drop_connections(e)
+        self.active, self.ports, self.counters = new, desired, counters
+        self.seen = {r['uuid']: r for r in rules}
         warnings = []
         if any(e.family == 6 for e in accepted) and sysctl('net.ipv6.conf.all.forwarding', self.proc) != '1':
             warnings.append('IPv6 转发未开启（net.ipv6.conf.all.forwarding=0），仅本机发起的 IPv6 连接会被转发')
         if sysctl('net.ipv4.ip_forward', self.proc) != '1' and any(e.family == 4 for e in accepted):
-            problems.append('系统未开启 IPv4 转发（net.ipv4.ip_forward=0）')
-        for message in problems:
+            reported.append('系统未开启 IPv4 转发（net.ipv4.ip_forward=0）')
+        for message in reported:
             if message not in self.problems:
                 self.log('警告：' + message)
-        self.problems, self.warnings, self.error = problems, warnings, None
+        self.problems, self.warnings, self.error = reported, warnings, None
 
     def drop_connections(self, e: Endpoint) -> None:
         # Only DNAT entries whose original destination is this endpoint; outgoing
@@ -346,7 +392,7 @@ class Engine:
                 self.drop_connections(e)
             for flt in self.filters.values():
                 flt.remove()
-            self.active, self.applied = {}, None
+            self.active, self.ports, self.counters, self.seen, self.ready = {}, {}, set(), {}, False
             self.log('已移除 nftables 转发表')
 
     def status(self) -> dict:
