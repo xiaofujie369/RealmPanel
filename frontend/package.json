@@ -1,1 +1,1 @@
-{"name":"realm-panel","version":"0.10.1","private":true,"type":"module","scripts":{"build":"vue-tsc --noEmit && vite build"},"dependencies":{"lucide-vue-next":"0.468.0","vue":"3.5.44"},"devDependencies":{"@vitejs/plugin-vue":"5.2.4","typescript":"5.8.3","vite":"6.4.5","vue-tsc":"2.2.10"}}
+{"name":"realm-panel","version":"0.10.2","private":true,"type":"module","scripts":{"build":"vue-tsc --noEmit && vite build"},"dependencies":{"lucide-vue-next":"0.468.0","vue":"3.5.44"},"devDependencies":{"@vitejs/plugin-vue":"5.2.4","typescript":"5.8.3","vite":"6.4.5","vue-tsc":"2.2.10"}}

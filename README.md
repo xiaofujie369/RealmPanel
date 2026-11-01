@@ -4,7 +4,7 @@
 
 0.10.0 起转发核心由 Realm 切换为 nftables。同机实测（4 并发 iperf3，veth 隔离网络）：TCP 吞吐 realm 17.8–18.4 Gbit/s → nftables 25.7–27.5 Gbit/s（约 +45%）；UDP 800 Mbit/s 时 realm 丢包 15–25%，nftables 0%。旧版数据库、备份和导出文件自动兼容，详见下文「从 Realm 版本迁移」。
 
-当前为 **0.10.1 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
+当前为 **0.10.2 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
 ## 功能
 
