@@ -30,3 +30,15 @@ code,pre,textarea{font-family:Consolas,ui-monospace,monospace}pre,.logs{white-sp
 .rules td.actions{position:static;box-shadow:none;background:transparent;padding-top:7px}
 .rules tbody tr:hover td.actions,.rules tr.checked td.actions{background:transparent}
 .row-actions{flex-wrap:wrap}.top-right{gap:5px}}.traffic-note{margin:8px 10px;font-size:12px;color:var(--muted)}
+
+.modal.diag{width:520px}
+.modal.diag>p,.modal.diag>ul,.modal.diag>footer{margin:10px 12px}
+.diag-route{margin:0 0 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;overflow-wrap:anywhere}
+.checks{list-style:none;margin:0 0 10px;padding:0;border:1px solid var(--line)}
+.checks li{display:flex;gap:10px;padding:8px 10px;border-bottom:1px solid var(--line)}
+.checks li:last-child{border-bottom:0}
+.checks .mark{flex:0 0 16px;font-weight:700;color:var(--green)}
+.checks li.bad .mark{color:#d14343}
+.checks strong{display:block;font-size:13px}
+.checks small{display:block;color:var(--muted);overflow-wrap:anywhere}
+.modal.diag footer{display:flex;justify-content:flex-end;gap:8px}

@@ -72,3 +72,23 @@ def test_invalid_import_prevents_apply(client):
     preview = client.post('/testpath/api/v1/import/preview', json=body).json()
     assert preview['errors']
     assert client.post('/testpath/api/v1/import/apply', json={'token': preview['token']}).status_code == 400
+
+
+def test_diagnose_checks_only_that_rule(client, monkeypatch):
+    from backend import app as app_module, manager
+    login(client)
+    with s.connect() as db:
+        rid = s.save_rule(db, {'name': '线路A', 'group': '默认', 'enabled': True, 'listen_host': '0.0.0.0', 'listen_port': 30001, 'remote_host': 'example.com', 'remote_port': 443, 'protocol': 'tcp', 'through': '', 'remark': ''})
+        rule_uuid = s.rules(db)[0]['uuid']
+    asked = []
+    def core(operation, method='GET'):
+        asked.append(operation)
+        return {'endpoints': [{'proto': 'tcp', 'family': 4, 'listen': '0.0.0.0:30001', 'remote': '203.0.113.5:443', 'target': '203.0.113.5', 'target_port': 443, 'through': ''}], 'problems': [], 'warnings': [], 'ip_forward': True, 'traffic': {'rx_bytes': 1, 'tx_bytes': 2, 'total_bytes': 3}, 'traffic_available': True}
+    monkeypatch.setattr(manager, 'core', core)
+    monkeypatch.setattr(app_module, 'probe', lambda *a: (True, 'TCP 连接成功'))
+    result = client.get(f'/testpath/api/v1/rules/{rid}/diagnose').json()
+    assert asked == [f'rule/{rule_uuid}']  # never the whole-core status
+    assert result['name'] == '线路A' and result['traffic']['total_bytes'] == 3
+    items = [c['item'] for c in result['checks']]
+    assert items == ['规则状态', 'TCP 内核转发', 'TCP 目标 203.0.113.5:443']
+    assert 'example.com 解析为 203.0.113.5' in result['checks'][2]['detail']

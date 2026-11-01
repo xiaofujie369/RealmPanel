@@ -277,6 +277,7 @@ class Engine:
         self.counters: set[str] = set()
         self.seen: dict[str, dict] = {}
         self.ready = False
+        self.rule_problems: dict[str, list[str]] = {}
         self.problems: list[str] = []
         self.warnings: list[str] = []
         self.error: str | None = None
@@ -307,6 +308,9 @@ class Engine:
         changed = {r['uuid'] for r in rules if self.seen.get(r['uuid']) != r}
         listeners = local_listeners(self.proc)
         accepted, reported = [], [msg for _, msg in problems]
+        per_rule: dict[str, list[str]] = {}
+        for uid, msg in problems:
+            per_rule.setdefault(uid, []).append(msg)
         rejected = [msg for uid, msg in problems if strict and uid in changed]
         for e in endpoints:
             owner = occupied(e, listeners)
@@ -314,6 +318,7 @@ class Engine:
                 accepted.append(e)
                 continue
             message = f'{e.name}：{e.proto.upper()} {e.listen} 已被本机进程占用（{owner}），nftables 不会劫持该端口'
+            per_rule.setdefault(e.rule, []).append(message)
             (rejected if strict and e.rule in changed else reported).append(message)
         if strict and sysctl('net.ipv4.ip_forward', self.proc) != '1' and any(e.family == 4 and e.rule in changed for e in accepted):
             rejected.append('系统未开启 IPv4 转发（net.ipv4.ip_forward=0）')
@@ -373,6 +378,7 @@ class Engine:
             if message not in self.problems:
                 self.log('警告：' + message)
         self.problems, self.warnings, self.error = reported, warnings, None
+        self.rule_problems = per_rule
 
     def drop_connections(self, e: Endpoint) -> None:
         # Only DNAT entries whose original destination is this endpoint; outgoing
@@ -394,6 +400,18 @@ class Engine:
                 flt.remove()
             self.active, self.ports, self.counters, self.seen, self.ready = {}, {}, set(), {}, False
             self.log('已移除 nftables 转发表')
+
+    def rule_status(self, rule_uuid: str) -> dict:
+        """Kernel state of a single rule only, for its diagnosis."""
+        endpoints = sorted((e for e in self.active.values() if e.rule == rule_uuid), key=lambda e: (e.proto, e.family))
+        return {
+            'running': self.table_exists(), 'known': rule_uuid in self.seen,
+            'endpoints': [{'proto': e.proto, 'family': e.family, 'listen': e.listen, 'remote': e.remote, 'target': e.target, 'target_port': e.target_port, 'through': e.through} for e in endpoints],
+            'problems': self.rule_problems.get(rule_uuid, []),
+            'warnings': self.warnings if any(e.family == 6 for e in endpoints) else [],
+            'ip_forward': sysctl('net.ipv4.ip_forward', self.proc) == '1',
+            'forward_filter': {f'ipv{k}': v.state for k, v in self.filters.items()},
+        }
 
     def status(self) -> dict:
         running = self.table_exists()

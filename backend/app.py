@@ -509,6 +509,58 @@ def check_port(body: Rule):
     return {'available': ok, 'detail': '端口可以使用' if ok else '端口已被规则或其他进程占用'}
 
 
+def probe(protocol: str, host: str, port: int, through: str = '') -> tuple[bool, str]:
+    """Reach the target from this host the way the kernel forwards to it."""
+    started = time.monotonic()
+    family = socket.AF_INET6 if ':' in host else socket.AF_INET
+    try:
+        with socket.socket(family, socket.SOCK_DGRAM if protocol == 'udp' else socket.SOCK_STREAM) as sock:
+            sock.settimeout(5)
+            if through:
+                sock.bind((through, 0))
+            if protocol == 'udp':
+                sock.sendto(b'RealmPanel UDP test', (host, port))
+                return True, 'UDP 数据已发出（UDP 无连接，不能证明远端应用会响应）'
+            sock.connect((host, port))
+            return True, f'TCP 连接成功，延迟 {(time.monotonic() - started) * 1000:.1f} ms'
+    except OSError as exc:
+        return False, f'连接失败：{exc}'
+
+
+@app.get(P + '/rules/{rid}/diagnose')
+def diagnose(rid: int):
+    """Diagnose one rule only: its kernel endpoints, its own problems, its target and traffic."""
+    with s.connect() as db:
+        rule = find_rule(db, rid)
+    checks = []
+    add = lambda ok, item, detail: checks.append({'ok': ok, 'item': item, 'detail': detail})
+    protocols = ['tcp', 'udp'] if rule['protocol'] == 'tcp_udp' else [rule['protocol']]
+    try:
+        core = m.core(f'rule/{rule["uuid"]}')
+    except Exception as exc:
+        add(False, '转发核心', f'无法连接：{exc}')
+        return {'name': rule['name'], 'checks': checks}
+    add(rule['enabled'], '规则状态', '已启用' if rule['enabled'] else '已暂停，内核中没有这条规则的转发')
+    endpoints = core['endpoints']
+    if rule['enabled']:
+        for protocol in protocols:
+            mine = [e for e in endpoints if e['proto'] == protocol]
+            add(bool(mine), f'{protocol.upper()} 内核转发', '；'.join(f'{e["listen"]} → {e["remote"]}' + (f'（出口 {e["through"]}）' if e['through'] else '') for e in mine) or '未生效')
+    for problem in core['problems']:
+        add(False, '问题', problem.split('：', 1)[-1])
+    for warning in core['warnings']:
+        add(False, '提示', warning)
+    if endpoints and any(e['family'] == 4 for e in endpoints) and not core['ip_forward']:
+        add(False, 'IPv4 转发', '系统未开启 net.ipv4.ip_forward')
+    targets = {(e['proto'], e['target'], e['target_port'], e['through']) for e in endpoints} or {(p, rule['remote_host'], rule['remote_port'], rule['through']) for p in protocols}
+    for protocol, host, port, through in sorted(targets):
+        ok, detail = probe(protocol, host, port, through)
+        shown = f'[{host}]:{port}' if ':' in host else f'{host}:{port}'
+        resolved = f'（{rule["remote_host"]} 解析为 {host}）' if host != rule['remote_host'] else ''
+        add(ok, f'{protocol.upper()} 目标 {shown}', detail + resolved)
+    return {'name': rule['name'], 'listen': f'{rule["listen_host"]}:{rule["listen_port"]}', 'remote': f'{rule["remote_host"]}:{rule["remote_port"]}', 'protocol': rule['protocol'], 'checks': checks, 'traffic': core['traffic'] if core.get('traffic_available') else None}
+
+
 @app.post(P + '/test-target')
 def test_target(body: Rule):
     started = time.monotonic()

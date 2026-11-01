@@ -6,6 +6,7 @@ import signal
 import socketserver
 import threading
 import time
+import uuid
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -57,6 +58,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(200, {'lines': list(LINES)})
             elif self.path == '/traffic':
                 self.reply(200, ENGINE.meter.snapshot())
+            elif self.path.startswith('/rule/'):
+                try:
+                    rule_uuid = str(uuid.UUID(self.path[6:]))
+                except ValueError:
+                    self.reply(404, {})
+                    return
+                traffic = ENGINE.meter.snapshot()
+                self.reply(200, {**ENGINE.rule_status(rule_uuid), 'traffic': traffic['rules'].get(rule_uuid, {'rx_bytes': 0, 'tx_bytes': 0, 'total_bytes': 0}), 'traffic_available': traffic['available']})
             else:
                 self.reply(404, {})
 
