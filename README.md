@@ -4,7 +4,7 @@
 
 0.10.0 起转发核心由 Realm 切换为 nftables。同机实测（4 并发 iperf3，veth 隔离网络）：TCP 吞吐 realm 17.8–18.4 Gbit/s → nftables 25.7–27.5 Gbit/s（约 +45%）；UDP 800 Mbit/s 时 realm 丢包 15–25%，nftables 0%。旧版数据库、备份和导出文件自动兼容，详见下文「从 Realm 版本迁移」。
 
-当前为 **0.10.0 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
+当前为 **0.10.1 验收版本**。设计原文见 [DESIGN.md](DESIGN.md)，真实验收范围见 [ACCEPTANCE.md](ACCEPTANCE.md)。未完成全矩阵验收前不会标记为 1.0.0。
 
 ## 功能
 
@@ -48,7 +48,7 @@ Linux **x86_64 / ARM64**，内核支持 nftables（nf_tables，Linux 5.2+ 的 in
 
 ## 安装
 
-VPS 访问 GitHub 困难时，使用 [本地下载、SSH 上传与部署的详细命令](LOCAL_INSTALL.md)。
+VPS 访问 GitHub 困难（如中国大陆）时，使用 [GitHub 加速镜像或本地上传的安装 / 升级命令](LOCAL_INSTALL.md)。
 
 在 root SSH 终端执行一键安装（安装器使用 GitHub Releases 预编译镜像）：
 
@@ -71,7 +71,7 @@ curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/i
 固定版本安装：
 
 ```bash
-curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.10.0 bash -s -- --yes
+curl -fsSL https://github.com/xiaofujie369/RealmPanel/releases/latest/download/install.sh | RMP_VERSION=0.10.1 bash -s -- --yes
 ```
 
 重复运行安装器不会重置已有数据；已安装环境使用 `rmpctl update`。
@@ -99,7 +99,7 @@ rmpctl reset-path
 rmpctl backup
 rmpctl restore-full --file 备份UUID
 rmpctl update
-rmpctl update 0.10.0
+rmpctl update 0.10.1
 rmpctl uninstall
 ```
 

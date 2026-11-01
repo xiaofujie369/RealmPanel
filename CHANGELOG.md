@@ -1,5 +1,13 @@
 # 更新记录
 
+## 0.10.1 — 2026-11-01
+
+- 国内网络：安装、升级支持 GitHub 加速前缀 `RMP_MIRROR`；`install.sh --update` 可直接升级 0.9.x 等旧版本。
+- 本地上传安装包（`install-local.sh … --yes`）在已安装的机器上自动执行带备份和回滚的升级。
+- Ubuntu 无法连接 Docker 官方源时改用系统软件源的 docker.io 与 docker-compose-v2。
+- 开启 IPv4 转发不再依赖 `sysctl` 命令，兼容未安装 procps 的精简 Debian。
+- 更新逻辑并入 install.sh，`rmpctl update`、在线升级与本地包升级共用同一实现。
+
 ## 0.10.0 — 2026-11-01
 
 - 转发核心由 Realm v2.9.3 切换为 Linux 内核 nftables（DNAT + masquerade/SNAT）。同机实测 TCP 吞吐约 +45%，UDP 800 Mbit/s 由 15–25% 丢包降为 0%。

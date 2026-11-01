@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install a public release uploaded through SSH; no application download on VPS.
+# Install or update from a release uploaded through SSH; no application download on VPS.
 set -Eeuo pipefail
 umask 077
 BUNDLE=$(cd -- "${1:-.}" && pwd -P)
@@ -27,6 +27,11 @@ download_release() {
   [[ $(cat "$WORK/source/VERSION") == "$RELEASE_VERSION" ]] || die '源码和镜像版本不一致。'
   log "✓ 本地安装包校验通过：RealmPanel $RELEASE_VERSION ($RMP_ARCH)，VPS 无需连接 GitHub。"
 }
+if [[ $MODE == --yes && -f "$INSTALL_DIR/data/database/realm-panel.db" ]]; then
+  # 已安装：用本包升级（含 0.9.x Realm 版），保留规则、账号与流量数据。
+  update_release
+  exit 0
+fi
 if [[ $MODE == --check ]]; then
   detect_system
   download_release

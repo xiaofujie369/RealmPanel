@@ -4,6 +4,9 @@ set -Eeuo pipefail
 umask 077
 RMP_REPO=${RMP_REPO:-xiaofujie369/RealmPanel}
 RMP_VERSION=${RMP_VERSION:-latest}
+# GitHub 加速前缀，例如 RMP_MIRROR=https://ghfast.top/ ；为空时直连 GitHub。
+RMP_MIRROR=${RMP_MIRROR:-}
+[[ -z $RMP_MIRROR || $RMP_MIRROR == */ ]] || RMP_MIRROR="$RMP_MIRROR/"
 INSTALL_DIR=/opt/realm-panel
 log() { printf '%s\n' "$*"; }
 die() { log "✗ $*" >&2; exit 1; }
@@ -109,8 +112,13 @@ install_docker_packages() {
       *)
         local installer
         installer=$(mktemp /tmp/realm-panel-docker.XXXXXX)
-        curl -fsSL --retry 3 https://get.docker.com -o "$installer"
-        sh "$installer"
+        if ! { curl -fsSL --retry 2 --connect-timeout 15 https://get.docker.com -o "$installer" && sh "$installer"; }; then
+          rm -f "$installer"
+          [[ $ID == ubuntu ]] || die '无法从 download.docker.com 安装 Docker；请先手动安装 Docker 与 Compose v2 后重试。'
+          # 国内网络常连不上 Docker 官方源，改用 Ubuntu 自带软件源（同样是 Compose v2）。
+          log 'Docker 官方源不可用，改用 Ubuntu 软件源安装 docker.io 与 docker-compose-v2……'
+          retry apt-get -o DPkg::Lock::Timeout=120 install -y docker.io docker-compose-v2
+        fi
         rm -f "$installer"
         ;;
     esac
@@ -124,12 +132,17 @@ install_docker_packages() {
   fi
   docker compose version
 }
+enable_ip_forward() {
+  # 直接写 /proc，精简 Debian 可能没有 procps 提供的 sysctl 命令。
+  mkdir -p /etc/sysctl.d
+  printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/90-realm-panel.conf
+  [[ $(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null) == 1 ]] || echo 1 > /proc/sys/net/ipv4/ip_forward || die '无法开启 IPv4 转发（net.ipv4.ip_forward）。'
+}
 ensure_forwarding() {
   # nftables DNAT needs nf_tables and the kernel routing packets between interfaces.
   modprobe nf_tables 2>/dev/null || true
   [[ -d /sys/module/nf_tables ]] || die '内核不支持 nftables（nf_tables 不可用）；OpenVZ/LXC 等受限容器无法使用内核转发。'
-  printf 'net.ipv4.ip_forward = 1\n' > /etc/sysctl.d/90-realm-panel.conf
-  sysctl -q -w net.ipv4.ip_forward=1 || die '无法开启 IPv4 转发（net.ipv4.ip_forward）。'
+  enable_ip_forward
   log '✓ 已开启 IPv4 转发并写入 /etc/sysctl.d/90-realm-panel.conf。'
   [[ $(cat /proc/sys/net/ipv6/conf/all/forwarding 2>/dev/null) == 1 ]] || log '提示：未自动开启 IPv6 转发（会影响依赖路由通告的 IPv6 网络），需要 IPv6 转发时请手动设置 net.ipv6.conf.all.forwarding=1。'
 }
@@ -157,10 +170,12 @@ download_release() {
     [[ $RMP_VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || die '无效版本号。'
     url="https://github.com/$RMP_REPO/releases/download/v$RMP_VERSION"
   fi
+  [[ -z $RMP_MIRROR ]] || log "使用 GitHub 加速镜像：$RMP_MIRROR（文件仍按 SHA256SUMS 校验）"
+  url="$RMP_MIRROR$url"
   curl -fL --retry 3 --connect-timeout 15 "$url/release.json" -o "$WORK/release.json"
   RELEASE_VERSION=$(python3 -c 'import json,sys,re; v=json.load(open(sys.argv[1]))["version"]; assert re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:[.-][A-Za-z0-9.-]+)?",v); print(v)' "$WORK/release.json")
-  url="https://github.com/$RMP_REPO/releases/download/v$RELEASE_VERSION"
-  curl -fL --retry 3 "$url/SHA256SUMS" -o "$WORK/SHA256SUMS"
+  url="${RMP_MIRROR}https://github.com/$RMP_REPO/releases/download/v$RELEASE_VERSION"
+  curl -fL --retry 3 --connect-timeout 15 "$url/SHA256SUMS" -o "$WORK/SHA256SUMS"
   local file
   for file in realm-panel.tar.gz "realm-panel-images-$RMP_ARCH.tar.gz"; do
     curl -fL --retry 3 --connect-timeout 15 "$url/$file" -o "$WORK/$file"
@@ -170,6 +185,52 @@ download_release() {
   tar -xzf "$WORK/realm-panel.tar.gz" -C "$WORK/source" --strip-components=1
   [[ $(cat "$WORK/source/VERSION") == "$RELEASE_VERSION" ]] || die '源码和镜像版本不一致。'
   log "✓ 已校验 RealmPanel $RELEASE_VERSION ($RMP_ARCH) 预编译镜像。"
+}
+update_release() {
+  # 供 rmpctl update、install.sh --update 及本地安装包升级共用。
+  [[ $(id -u) == 0 ]] || die '请使用 root 用户执行更新。'
+  [[ -f "$INSTALL_DIR/data/database/realm-panel.db" ]] || die '未检测到已安装的 RealmPanel，请使用全新安装命令。'
+  RMP_VERSION=${1:-$RMP_VERSION}
+  cd "$INSTALL_DIR"
+  detect_system
+  log '获取新版本预编译镜像，当前服务继续运行……'
+  download_release
+  docker load -i "$WORK/realm-panel-images-$RMP_ARCH.tar.gz"
+  UPDATE_BACKUP=$(mktemp -d /opt/realm-panel-update.XXXXXX)
+  mapfile -t OLD_IMAGES < <(docker compose config --images)
+  local index
+  for index in "${!OLD_IMAGES[@]}"; do
+    docker tag "${OLD_IMAGES[$index]}" "realm-panel-rollback:$index"
+  done
+  log '创建完整升级备份……'
+  docker compose stop realm-panel-web realm-panel-core
+  tar -czf "$UPDATE_BACKUP/previous.tar.gz" --exclude=.git -C "$INSTALL_DIR" .
+  trap update_rollback ERR
+  tar -C "$WORK/source" -cf - . | tar -C "$INSTALL_DIR" -xf -
+  mkdir -p data/forward data/traffic
+  enable_ip_forward
+  printf 'RMP_VERSION=%s\n' "$RELEASE_VERSION" > .env
+  docker compose up -d --no-build
+  python3 scripts/healthcheck.py
+  install -m 755 scripts/rmpctl /usr/local/bin/rmpctl
+  trap - ERR
+  [[ $WORK == /tmp/realm-panel-release.* ]] && rm -rf -- "$WORK"
+  log "✓ 已升级到 $RELEASE_VERSION，无需本机编译。升级备份：$UPDATE_BACKUP/previous.tar.gz"
+}
+update_rollback() {
+  trap - ERR
+  log '更新失败，恢复之前版本、数据库和镜像……'
+  cd "$INSTALL_DIR"
+  docker compose down || true
+  tar -xzf "$UPDATE_BACKUP/previous.tar.gz" -C "$INSTALL_DIR"
+  local index
+  for index in "${!OLD_IMAGES[@]}"; do
+    docker tag "realm-panel-rollback:$index" "${OLD_IMAGES[$index]}"
+  done
+  docker compose up -d --no-build
+  python3 scripts/healthcheck.py || { log '恢复健康检查未通过，请运行 rmpctl logs。'; exit 1; }
+  log "已恢复旧版本；完整备份：$UPDATE_BACKUP"
+  exit 1
 }
 show_install_info() {
   local public_ip=${RMP_PUBLIC_IP:-}
@@ -184,8 +245,12 @@ show_install_info() {
 }
 main() {
   if [[ ${1:-} == --help ]]; then
-    log '用法：bash install.sh [--yes|--check]'
-    log '环境变量：RMP_VERSION=版本号；RMP_PUBLIC_IP=公网IP；RMP_SKIP_SWAP=1（明确无需 Swap 时）'
+    log '用法：bash install.sh [--yes|--check|--update]'
+    log '环境变量：RMP_VERSION=版本号；RMP_PUBLIC_IP=公网IP；RMP_MIRROR=GitHub 加速前缀；RMP_SKIP_SWAP=1（明确无需 Swap 时）'
+    return
+  fi
+  if [[ ${1:-} == --update ]]; then
+    update_release "$RMP_VERSION"
     return
   fi
   trap 'log "✗ 安装失败（第 $LINENO 行）。请检查上方错误，已有数据不会删除。" >&2' ERR
@@ -197,7 +262,7 @@ main() {
   [[ ${1:-} == --check ]] && return
   [[ $(id -u) == 0 ]] || die '请使用 root 用户执行安装。'
   if [[ -f "$INSTALL_DIR/data/database/realm-panel.db" ]]; then
-    log '已安装 RealmPanel，保留现有数据。升级请运行：rmpctl update'
+    log '已安装 RealmPanel，保留现有数据。升级请运行：rmpctl update（国内网络可用 bash install.sh --update 配合 RMP_MIRROR）'
     return
   fi
   log '[2/9] 安装必要的系统工具'
